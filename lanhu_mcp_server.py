@@ -4422,7 +4422,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
     return results
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_resolve_invite_link(
     invite_url: Annotated[str, "Lanhu invite link. Example: https://lanhuapp.com/link/#/invite?sid=xxx"]
 ) -> dict:
@@ -4576,7 +4576,7 @@ def _get_analysis_mode_options_by_role(user_role: str) -> str:
 """
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_list_product_documents(
     url: Annotated[str, "Lanhu project URL. Example: https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx (docId optional, will be ignored). Required params: tid, pid. If you have an invite link, use lanhu_resolve_invite_link first!"],
     ctx: Context = None
@@ -4605,7 +4605,7 @@ async def lanhu_list_product_documents(
         await extractor.close()
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_get_pages(
     url: Annotated[str, "Lanhu URL with docId parameter (indicates PRD/prototype document). Example: https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx&docId=xxx. Required param: pid. tid and docId recommended. Supports detailDetach format: ?pid=xxx&image_id=xxx. If you have an invite link, use lanhu_resolve_invite_link first!"],
     ctx: Context = None
@@ -5231,7 +5231,7 @@ def _get_analysis_mode_prompt(analysis_mode: str) -> dict:
         }
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_get_ai_analyze_page_result(
         url: Annotated[str, "Lanhu URL with docId parameter (indicates PRD/prototype document). Example: https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx&docId=xxx. Required param: pid. tid and docId recommended. Supports detailDetach format. If you have an invite link, use lanhu_resolve_invite_link first!"],
         page_names: Annotated[Union[str, List[str]], "Page name(s) to analyze. Use 'all' for all pages, single name like '退款流程', or list like ['退款流程', '用户中心']. Get exact names from lanhu_get_pages first!"],
@@ -6185,7 +6185,7 @@ async def lanhu_get_design_slices(
 
 # ==================== 团队留言板功能 ====================
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_say(
         url: Annotated[str, "蓝湖URL（含tid和pid）。例: https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx&docId=xxx。会自动提取项目和文档信息"],
         summary: Annotated[str, "留言标题/概要"],
@@ -6331,7 +6331,7 @@ async def lanhu_say(
     }
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_say_list(
     url: Annotated[Optional[str], "蓝湖URL或'all'。不传或传'all'=查询所有项目；传具体URL=查询单个项目"] = None,
     filter_type: Annotated[Optional[str], "筛选留言类型: normal/task/question/urgent/knowledge。不传则返回所有类型"] = None,
@@ -6594,7 +6594,7 @@ async def lanhu_say_list(
     return result
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_say_detail(
         message_ids: Annotated[Any, "消息ID。单个数字或数组。例: 1 或 [1,2,3]"],
         url: Annotated[Optional[str], "蓝湖URL。传URL则自动解析项目ID；不传则需手动提供project_id参数"] = None,
@@ -6663,7 +6663,7 @@ async def lanhu_say_detail(
     }
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_say_edit(
         url: Annotated[str, "蓝湖URL（含tid和pid）"],
         message_id: Annotated[Any, "要编辑的消息ID"],
@@ -6752,7 +6752,7 @@ async def lanhu_say_edit(
     }
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_say_delete(
         url: Annotated[str, "蓝湖URL（含tid和pid）"],
         message_id: Annotated[Any, "要删除的消息ID"],
@@ -6800,7 +6800,7 @@ async def lanhu_say_delete(
     }
 
 
-@mcp.tool()
+# @mcp.tool()
 async def lanhu_get_members(
     url: Annotated[str, "蓝湖URL（含tid和pid）"],
     ctx: Context = None
