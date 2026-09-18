@@ -177,7 +177,8 @@ def normalize_design(raw: dict) -> dict:
                     walk(child, f"{pointer}/{field}/{index}", pointer)
 
     canvas_layer = None
-    if source_type == "figma" and isinstance(raw.get("artboard"), dict):
+    figma_artboard = source_type == "figma" and isinstance(raw.get("artboard"), dict)
+    if figma_artboard:
         canvas_layer = raw["artboard"]
         walk(canvas_layer, "/artboard")
     elif source_type == "photoshop" and isinstance(raw.get("board"), dict):
@@ -208,7 +209,7 @@ def normalize_design(raw: dict) -> dict:
         if canvas_bounds:
             width, height = canvas_bounds["width"], canvas_bounds["height"]
             canvas_origin = {"x": canvas_bounds["x"], "y": canvas_bounds["y"]}
-            if canvas_origin["x"] != 0 or canvas_origin["y"] != 0:
+            if not figma_artboard and (canvas_origin["x"] != 0 or canvas_origin["y"] != 0):
                 gap("nonzero_canvas_origin_unverified", canvas_origin=canvas_origin.copy(),
                     message="Nonzero source canvas origin requires verified image mapping; no translation was applied.")
         else:
@@ -252,6 +253,9 @@ def normalize_design(raw: dict) -> dict:
             gap("duplicate_node_id", node_id=node_id, source_id=sid, source_pointer=pointer)
         ids_by_pointer[pointer] = node_id
         bounds, bounds_field = _bounds(layer, source_type)
+        if figma_artboard and layer is canvas_layer and bounds is not None:
+            # Lanhu Figma children use artboard coordinates; only the board frame uses document coordinates.
+            bounds["x"] = bounds["y"] = 0
         if bounds is None:
             gap("missing_node_bounds", node_id=node_id, source_pointer=pointer)
         structural = {"id", "objectID", "do_objectID", "name", "type", "ddsType", "layerType", "layers",

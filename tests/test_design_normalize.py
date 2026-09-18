@@ -229,11 +229,29 @@ def test_unsupported_structure_and_invalid_input_are_explicit():
         normalize_design([])
 
 
+@pytest.mark.parametrize("origin", [(1000, 2000), (-317, -130.25), (0, 0)])
+def test_figma_artboard_document_position_does_not_translate_canvas_nodes_or_assets(origin):
+    raw = {"meta": {"host": {"name": "figma"}}, "artboard": {
+        "id": "board", "frame": {"left": origin[0], "top": origin[1], "width": 100, "height": 200},
+        "layers": [{"id": "group", "frame": {"left": 10, "top": 20, "width": 40, "height": 50},
+                    "hasExportImage": True, "image": {"imageUrl": "https://cdn.example.test/group.png"},
+                    "layers": [{"id": "child", "frame": {"left": 15, "top": 25, "width": 20, "height": 30}}]}],
+    }}
+    original = deepcopy(raw)
+    result = normalize_design(raw)
+    nodes = _nodes(result)
+    assert result["canvas_origin"] == {"x": origin[0], "y": origin[1]}
+    assert result["canvas"] == {"width": 100, "height": 200}
+    assert "nonzero_canvas_origin_unverified" not in _codes(result)
+    assert nodes["board"]["bounds"] == {"x": 0, "y": 0, "width": 100, "height": 200}
+    assert nodes["board"]["raw_style"]["frame"] == original["artboard"]["frame"]
+    assert nodes["group"]["bounds"] == {"x": 10, "y": 20, "width": 40, "height": 50}
+    assert nodes["child"]["bounds"] == {"x": 15, "y": 25, "width": 20, "height": 30}
+    assert result["assets"][0]["render_bounds"] == nodes["group"]["bounds"]
+    assert raw == original
+
+
 @pytest.mark.parametrize("raw", [
-    {"meta": {"host": {"name": "figma"}}, "artboard": {
-        "id": "board", "frame": {"x": 1000, "y": 2000, "width": 100, "height": 200},
-        "layers": [{"id": "child", "frame": {"x": 1010, "y": 2020, "width": 20, "height": 30}}],
-    }},
     {"type": "ps", "board": {
         "id": "board", "left": 1000, "top": 2000, "width": 100, "height": 200,
         "layers": [{"id": "child", "left": 1010, "top": 2020, "width": 20, "height": 30}],

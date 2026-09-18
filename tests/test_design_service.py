@@ -223,6 +223,45 @@ async def test_hidden_ancestor_and_numeric_dds_ids_are_respected(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_figma_nonzero_artboard_position_supports_mcp_snapshot_and_local_crop(tmp_path, monkeypatch):
+    import lanhu_mcp_server as server
+    service = FakeDesignService(tmp_path)
+    original = service.fetch_json
+    async def fetch(url):
+        value = await original(url)
+        if "info" in value:
+            return {"meta": {"host": {"name": "figma"}}, "artboard": {
+                "id": "board", "frame": {"left": 1000, "top": 2000, "width": 100, "height": 100},
+                "layers": [{"id": "button", "frame": {"left": 10, "top": 20, "width": 40, "height": 30},
+                            "hasExportImage": True, "image": {"imageUrl": "https://source/asset.png"}}],
+            }}
+        return value
+    service.fetch_json = fetch
+    monkeypatch.setattr(server, "_design_service", service)
+    async with Client(server.mcp) as client:
+        overview = await client.call_tool("lanhu_get_design_overview", {"url": URL, "annotate": True})
+        data = json.loads(overview.content[0].text)
+        assert data["status"] == "complete"
+        sid = data["snapshot_id"]
+        assert any(c.type == "image" for c in overview.content)
+        assert data["nodes"][0]["bounds"] == {"x": 0, "y": 0, "width": 100, "height": 100}
+        assert data["labels"][0]["node_id"] == "board"
+        assert service.load(sid)["canvas_origin"] == {"x": 1000, "y": 2000}
+        region = await client.call_tool("lanhu_inspect_design_region", {
+            "snapshot_id": sid, "region": {"x": 10, "y": 20, "width": 40, "height": 30},
+            "node_ids": ["button"],
+        })
+        context = json.loads(region.content[0].text)
+        assert context["source_region"] == {"x": 10, "y": 20, "width": 40, "height": 30}
+        assert context["image_size"] == {"width": 80, "height": 60}
+        assert context["labels"][0]["node_id"] == "button"
+        assert context["assets"][0]["render_bounds"] == {"x": 10, "y": 20, "width": 40, "height": 30}
+        exported = await client.call_tool("lanhu_export_design_assets", {"snapshot_id": sid})
+        assert exported.data["status"] == "complete"
+        assert exported.data["assets"][0]["actual_pixel_size"] == {"width": 80, "height": 60}
+
+
+@pytest.mark.asyncio
 async def test_nonzero_canvas_origin_fails_explicitly_instead_of_wrong_crop(tmp_path):
     service = FakeDesignService(tmp_path)
     original = service.fetch_json

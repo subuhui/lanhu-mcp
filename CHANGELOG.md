@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Normalize Lanhu Figma artboard nodes to the canvas origin while preserving child coordinates and the source document position, allowing snapshots for nonzero artboard frames.
+
 ## [1.8.0] - 2026-09-10
 
 ### Added

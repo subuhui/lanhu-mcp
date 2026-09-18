@@ -75,8 +75,12 @@ crop of valid nodes. Hidden nodes are omitted by default and can be queried with
 
 Raw attributes and DDS layout suggestions are separate. Complex transforms are
 preserved with limitations in `gaps`, rather than approximated as exact CSS.
-Nonzero source canvas origins currently fail with `UnsupportedCoordinates`;
-their relationship to the reference image needs source-specific verification.
+Lanhu Figma `artboard` data uses document coordinates for the artboard frame and
+artboard coordinates for its child layers. The artboard node is normalized to
+`(0, 0)` without translating children; its original document position remains in
+`canvas_origin` and the raw frame attributes. Other source structures with
+nonzero canvas origins still fail with `UnsupportedCoordinates` until their
+relationship to the reference image is verified.
 Visibility inherited from a hidden source ancestor is preserved separately as
 `effective_source_visible`, and these nodes are not drawn over the visible image.
 Logical/CSS unit conversion is not guessed from export density. Known source
