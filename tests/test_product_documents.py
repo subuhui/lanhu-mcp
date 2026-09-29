@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
@@ -16,6 +18,8 @@ from lanhu_mcp_server import (  # noqa: E402
     BASE_URL,
     LanhuExtractor,
     _format_lanhu_rfc2822,
+    get_project_id_from_url,
+    parse_lanhu_url,
 )
 
 
@@ -56,6 +60,20 @@ def test_parse_url_extracts_tid_and_pid_for_product_documents_call():
 
     assert params["team_id"] == "7056ff9d-e769-4d67-9e2a-a6e8fed2d04f"
     assert params["project_id"] == "dff90e32-c416-4a72-92a5-ca60946fdccc"
+
+
+def test_project_id_parsing_does_not_allocate_an_http_client(monkeypatch):
+    def fail_if_created(*args, **kwargs):
+        raise AssertionError("URL parsing must not create an HTTP client")
+
+    monkeypatch.setattr("lanhu_mcp_server.httpx.AsyncClient", fail_if_created)
+    assert get_project_id_from_url("?pid=project-123") == "project-123"
+
+
+@pytest.mark.parametrize("url", ["?pid=../escape", "?pid=%2Ftmp%2Fescape", "?pid=project&docId=../../escape"])
+def test_parse_url_rejects_identifiers_that_are_unsafe_as_path_segments(url):
+    with pytest.raises(ValueError, match="Invalid"):
+        parse_lanhu_url(url)
 
 
 # ---------------------------------------------------------------------------

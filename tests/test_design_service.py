@@ -186,11 +186,44 @@ async def test_credentials_do_not_follow_cdn_redirects(tmp_path, monkeypatch):
         return original_client(transport=httpx.MockTransport(handle), **kwargs)
     monkeypatch.setattr("lanhu_design.service.httpx.AsyncClient", factory)
     service = DesignService(tmp_path, cookie="private-cookie")
-    assert await service.fetch_bytes("https://lanhuapp.com/asset") == b"image-bytes"
-    assert requests[0].headers["cookie"] == "private-cookie"
-    assert "cookie" not in requests[1].headers
-    with pytest.raises(DesignError):
-        await service.fetch_bytes("https://unrelated.example/asset")
+    try:
+        assert await service.fetch_bytes("https://lanhuapp.com/asset") == b"image-bytes"
+        assert requests[0].headers["cookie"] == "private-cookie"
+        assert "cookie" not in requests[1].headers
+        with pytest.raises(DesignError):
+            await service.fetch_bytes("https://unrelated.example/asset")
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_fetches_reuse_one_http_client_until_service_is_closed(tmp_path, monkeypatch):
+    created = []
+
+    def handle(request):
+        return httpx.Response(200, content=b"image-bytes")
+
+    original_client = httpx.AsyncClient
+
+    def factory(**kwargs):
+        client = original_client(transport=httpx.MockTransport(handle), **kwargs)
+        created.append(client)
+        return client
+
+    monkeypatch.setattr("lanhu_design.service.httpx.AsyncClient", factory)
+    service = DesignService(tmp_path)
+    await service.fetch_bytes("https://lanhuapp.com/one")
+    await service.fetch_bytes("https://lanhuapp.com/two")
+    assert len(created) == 1
+    await service.close()
+    assert created[0].is_closed
+
+
+def test_cache_locks_are_scoped_to_one_snapshot_or_bundle(tmp_path):
+    service = DesignService(tmp_path)
+    first = service._lock_for("snapshot:first")
+    assert first is service._lock_for("snapshot:first")
+    assert first is not service._lock_for("snapshot:second")
 
 
 @pytest.mark.asyncio

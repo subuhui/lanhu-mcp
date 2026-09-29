@@ -10,6 +10,7 @@ import math
 import re
 import tempfile
 import warnings
+import weakref
 import zipfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
@@ -149,38 +150,56 @@ class DesignService:
         self.cookie = cookie
         self.dds_cookie = dds_cookie or cookie
         self.timeout = timeout
-        self._lock = asyncio.Lock()
+        self._client = None
+        self._locks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+    def _lock_for(self, key: str) -> asyncio.Lock:
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=self.timeout, follow_redirects=False)
+        return self._client
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
 
     async def fetch_bytes(self, url: str) -> bytes:
         """Origin-scoped credentials, bounded reads, and validated redirects."""
-        async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=False) as client:
-            for _ in range(5):
-                parsed = urlsplit(url)
-                host = parsed.hostname or ""
-                allowed = (host == "lanhuapp.com" or host.endswith(".lanhuapp.com") or host in {
-                    "lanhu.oss-cn-beijing.aliyuncs.com", "lanhu-dds-backend.oss-cn-beijing.aliyuncs.com"})
-                if parsed.scheme != "https" or not allowed or parsed.username or parsed.port not in (None, 443):
-                    raise DesignError("UnsupportedResourceHost", "The resource host is not an approved Lanhu origin.")
-                headers = {"Referer": "https://lanhuapp.com/", "User-Agent": "Lanhu-MCP-design-context/1"}
-                if host == "lanhuapp.com":
-                    headers["Cookie"] = self.cookie
-                elif host == "dds.lanhuapp.com":
-                    headers.update({"Cookie": self.dds_cookie, "Referer": "https://dds.lanhuapp.com/",
-                                    "Authorization": "Basic dW5kZWZpbmVkOg=="})
-                async with client.stream("GET", url, headers=headers) as response:
-                    if response.is_redirect:
-                        url = urljoin(url, response.headers.get("location", ""))
-                        continue
-                    if response.status_code in (401, 403):
-                        raise DesignError("AccessDenied", "Lanhu rejected this resource. Check login and project access.")
-                    if response.status_code >= 400:
-                        raise DesignError("DownloadFailed", f"Resource returned HTTP {response.status_code}.")
-                    data = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        data.extend(chunk)
-                        if len(data) > 64 * 1024 * 1024:
-                            raise DesignError("ResourceTooLarge", "A source resource exceeds 64 MiB.")
-                    return bytes(data)
+        client = self._http_client()
+        for _ in range(5):
+            parsed = urlsplit(url)
+            host = parsed.hostname or ""
+            allowed = (host == "lanhuapp.com" or host.endswith(".lanhuapp.com") or host in {
+                "lanhu.oss-cn-beijing.aliyuncs.com", "lanhu-dds-backend.oss-cn-beijing.aliyuncs.com"})
+            if parsed.scheme != "https" or not allowed or parsed.username or parsed.port not in (None, 443):
+                raise DesignError("UnsupportedResourceHost", "The resource host is not an approved Lanhu origin.")
+            headers = {"Referer": "https://lanhuapp.com/", "User-Agent": "Lanhu-MCP-design-context/1"}
+            if host == "lanhuapp.com":
+                headers["Cookie"] = self.cookie
+            elif host == "dds.lanhuapp.com":
+                headers.update({"Cookie": self.dds_cookie, "Referer": "https://dds.lanhuapp.com/",
+                                "Authorization": "Basic dW5kZWZpbmVkOg=="})
+            async with client.stream("GET", url, headers=headers) as response:
+                if response.is_redirect:
+                    url = urljoin(url, response.headers.get("location", ""))
+                    continue
+                if response.status_code in (401, 403):
+                    raise DesignError("AccessDenied", "Lanhu rejected this resource. Check login and project access.")
+                if response.status_code >= 400:
+                    raise DesignError("DownloadFailed", f"Resource returned HTTP {response.status_code}.")
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > 64 * 1024 * 1024:
+                        raise DesignError("ResourceTooLarge", "A source resource exceeds 64 MiB.")
+                return bytes(data)
         raise DesignError("RedirectLimit", "Resource redirected too many times.")
 
     async def fetch_json(self, url: str) -> dict:
@@ -254,20 +273,21 @@ class DesignService:
                                "design": ref["design_id"], "version": version["id"],
                                "raw_hash": _digest(raw), "normalized_hash": _digest(normalized),
                                "image_hash": hashlib.sha256(reference).hexdigest(), "original_hash": original_hash})[:32]
-        async with self._lock:
-            directory = self._snapshot_dir(snapshot_id)
+        directory = self._snapshot_dir(snapshot_id)
+        dds = None
+        dds_gap = None
+        if not (directory / "snapshot.json").is_file():
+            try:
+                dds_info = self._api_result(await self.fetch_json(
+                    "https://dds.lanhuapp.com/api/dds/image/store_schema_revise?" + urlencode({"version_id": version["id"]})))
+                if dds_info.get("data_resource_url"):
+                    dds = await self.fetch_json(dds_info["data_resource_url"])
+                else:
+                    dds_gap = "No DDS layout available for this exact version."
+            except (DesignError, httpx.HTTPError):
+                dds_gap = "DDS unavailable for this exact version; raw nodes remain available."
+        async with self._lock_for(f"snapshot:{snapshot_id}"):
             if not (directory / "snapshot.json").is_file():
-                dds = None
-                dds_gap = None
-                try:
-                    dds_info = self._api_result(await self.fetch_json(
-                        "https://dds.lanhuapp.com/api/dds/image/store_schema_revise?" + urlencode({"version_id": version["id"]})))
-                    if dds_info.get("data_resource_url"):
-                        dds = await self.fetch_json(dds_info["data_resource_url"])
-                    else:
-                        dds_gap = "No DDS layout available for this exact version."
-                except (DesignError, httpx.HTTPError):
-                    dds_gap = "DDS unavailable for this exact version; raw nodes remain available."
                 snapshot = {**normalized, "schema_version": "2", "snapshot_id": snapshot_id, "project_id": ref["project_id"],
                             "design_id": ref["design_id"], "design_name": info.get("name", ""),
                             "resolved_version": version["id"], "version_label": version.get("version_info"),
@@ -478,7 +498,7 @@ class DesignService:
         bundle_id = _digest({"ids": sorted(a["asset_id"] for a in selected), "dpr": target_dpr,
                              "format_preference": format_preference})[:32]
         directory = self._snapshot_dir(snapshot_id) / "exports" / bundle_id
-        async with self._lock:
+        async with self._lock_for(f"bundle:{snapshot_id}:{bundle_id}"):
             manifest = await download_assets(selected, directory, fetch=self.fetch_bytes, target_dpr=target_dpr)
             by_id = {a["asset_id"]: a for a in selected}
             verified = []

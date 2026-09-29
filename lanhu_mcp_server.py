@@ -10,6 +10,8 @@ import re
 import base64
 import json
 import hashlib
+import tempfile
+from contextlib import asynccontextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Annotated, Optional, Union, List, Any
@@ -37,11 +39,73 @@ except ImportError:
 
 # 东八区时区（北京时间）
 CHINA_TZ = timezone(timedelta(hours=8))
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 from email.utils import parsedate_to_datetime
 
 # 元数据缓存配置（基于版本号的永久缓存）
 _metadata_cache = {}  # {cache_key: {'data': {...}, 'version_id': str}}
+
+
+def _safe_path_segment(value: str, field: str) -> str:
+    """Validate an opaque Lanhu identifier before using it as a path segment."""
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,255}", value):
+        raise ValueError(f"Invalid {field}")
+    return value
+
+
+def _safe_child_path(root: Path, relative_path: str) -> Path:
+    """Resolve a remote-provided relative path without allowing directory escape."""
+    if not isinstance(relative_path, str) or not relative_path or "\x00" in relative_path:
+        raise ValueError("Resource path must be a nonempty relative path")
+    relative = Path(relative_path)
+    if relative.is_absolute():
+        raise ValueError("Resource path must be relative")
+    root = root.resolve()
+    target = (root / relative).resolve()
+    if not target.is_relative_to(root):
+        raise ValueError("Resource path escapes the output directory")
+    return target
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}-", delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(data)
+            handle.close()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def parse_lanhu_url(url: str) -> dict:
+    """Parse Lanhu URL/query parameters without allocating network resources."""
+    if not isinstance(url, str) or not url:
+        raise ValueError("Invalid Lanhu URL")
+    query = url
+    if url.startswith("http"):
+        fragment = urlparse(url).fragment
+        if not fragment:
+            raise ValueError("Invalid Lanhu URL: missing fragment part")
+        query = fragment.split("?", 1)[1] if "?" in fragment else fragment
+    query = query.removeprefix("?")
+    params = dict(parse_qsl(query, keep_blank_values=True))
+    project_id = params.get("pid")
+    if not project_id:
+        raise ValueError("URL parsing failed: missing required param pid (project_id)")
+    values = {
+        "team_id": params.get("tid"),
+        "project_id": project_id,
+        "doc_id": params.get("docId") or params.get("image_id"),
+        "version_id": params.get("versionId"),
+        "page_id": params.get("pageId"),
+    }
+    for field in ("project_id", "doc_id"):
+        value = values[field]
+        if value is not None:
+            _safe_path_segment(value, field)
+    return values
 
 
 def _format_lanhu_rfc2822(value: Optional[str]) -> Optional[str]:
@@ -69,8 +133,19 @@ from fastmcp.utilities.types import Image
 from mcp.types import TextContent
 from playwright.async_api import async_playwright
 
+
+@asynccontextmanager
+async def _server_lifespan(_server):
+    try:
+        yield {}
+    finally:
+        design_service = globals().get("_design_service")
+        if design_service is not None:
+            await design_service.close()
+
+
 # 创建FastMCP服务器
-mcp = FastMCP("Lanhu Axure Extractor")
+mcp = FastMCP("Lanhu Axure Extractor", lifespan=_server_lifespan)
 
 # 全局配置
 DEFAULT_COOKIE = "your_lanhu_cookie_here"  # 请替换为你的蓝湖Cookie，从浏览器开发者工具中获取
@@ -2026,7 +2101,8 @@ class MessageStore:
         self.storage_dir.mkdir(parents=True, exist_ok=True)
         
         if project_id:
-            self.file_path = self.storage_dir / f"{project_id}.json"
+            safe_project_id = _safe_path_segment(project_id, "project_id")
+            self.file_path = self.storage_dir / f"{safe_project_id}.json"
             self._data = self._load()
         else:
             # 全局模式，不加载单个文件
@@ -2050,8 +2126,8 @@ class MessageStore:
     
     def _save(self):
         """保存项目数据"""
-        with open(self.file_path, 'w', encoding='utf-8') as f:
-            json.dump(self._data, f, ensure_ascii=False, indent=2)
+        payload = json.dumps(self._data, ensure_ascii=False, indent=2).encode("utf-8")
+        _atomic_write(self.file_path, payload)
     
     def _get_now(self) -> str:
         """获取当前时间字符串（东八区/北京时间）"""
@@ -2381,8 +2457,7 @@ def get_project_id_from_url(url: str) -> str:
     """从URL中提取project_id"""
     if not url or url.lower() == 'all':
         return None
-    extractor = LanhuExtractor()
-    params = extractor.parse_url(url)
+    params = parse_lanhu_url(url)
     return params.get('project_id', '')
 
 
@@ -2547,51 +2622,7 @@ class LanhuExtractor:
         Returns:
             包含project_id, team_id(可为None), doc_id, version_id的字典
         """
-        # 如果是完整URL，提取fragment部分
-        if url.startswith('http'):
-            parsed = urlparse(url)
-            fragment = parsed.fragment
-
-            if not fragment:
-                raise ValueError("Invalid Lanhu URL: missing fragment part")
-
-            # 从fragment中提取参数部分
-            if '?' in fragment:
-                url = fragment.split('?', 1)[1]
-            else:
-                url = fragment
-
-        # 处理只有参数的情况
-        if url.startswith('?'):
-            url = url[1:]
-
-        # 解析参数
-        params = {}
-        for part in url.split('&'):
-            if '=' in part:
-                key, value = part.split('=', 1)
-                params[key] = value
-
-        # 提取必需参数
-        team_id = params.get('tid')
-        project_id = params.get('pid')
-        doc_id = params.get('docId') or params.get('image_id')
-        version_id = params.get('versionId')
-        # pageId 跨文档版本保持稳定：文档被替换后 docId/versionId 会变，
-        # 但 pageId 仍能在新文档的 sitemap 中命中，可用于兜底消歧
-        page_id = params.get('pageId')
-
-        # 验证必需参数（pid 是唯一必需的，tid 可选 — detailDetach 等格式不含 tid）
-        if not project_id:
-            raise ValueError(f"URL parsing failed: missing required param pid (project_id)")
-
-        return {
-            'team_id': team_id,
-            'project_id': project_id,
-            'doc_id': doc_id,
-            'version_id': version_id,
-            'page_id': page_id
-        }
+        return parse_lanhu_url(url)
 
     async def get_document_info(self, project_id: str, doc_id: str,
                                 team_id: str = None, page_id: str = None) -> dict:
@@ -2806,9 +2837,8 @@ class LanhuExtractor:
     def _save_cache_meta(self, output_dir: Path, meta_data: dict):
         """保存缓存元数据"""
         meta_path = self._get_cache_meta_path(output_dir)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump(meta_data, f, ensure_ascii=False, indent=2)
+        payload = json.dumps(meta_data, ensure_ascii=False, indent=2).encode("utf-8")
+        _atomic_write(meta_path, payload)
 
     def _check_file_integrity(self, output_dir: Path, expected_files: dict) -> dict:
         """
@@ -2816,7 +2846,7 @@ class LanhuExtractor:
 
         Args:
             output_dir: 输出目录
-            expected_files: 期望的文件字典 {相对路径: md5签名}
+            expected_files: 期望的文件字典 {相对路径: SHA-256}
 
         Returns:
             {
@@ -2831,18 +2861,17 @@ class LanhuExtractor:
             'valid': []
         }
 
-        for rel_path, expected_md5 in expected_files.items():
-            file_path = output_dir / rel_path
+        for rel_path, expected_hash in expected_files.items():
+            file_path = _safe_child_path(output_dir, rel_path)
 
-            if not file_path.exists():
+            if not file_path.is_file():
                 result['missing'].append(rel_path)
-            elif expected_md5:
-                # 如果有MD5签名，验证文件
-                # 注意：这里简化处理，只检查文件是否存在
-                # 完整的MD5验证会比较慢
-                result['valid'].append(rel_path)
             else:
-                result['valid'].append(rel_path)
+                actual_hash = hashlib.sha256(file_path.read_bytes()).hexdigest()
+                if expected_hash and actual_hash != expected_hash:
+                    result['corrupted'].append(rel_path)
+                else:
+                    result['valid'].append(rel_path)
 
         return result
 
@@ -2860,22 +2889,16 @@ class LanhuExtractor:
         if cached_version != current_version_id:
             return (True, 'version_changed', [])
 
-        # 检查文件完整性
-        pages = project_mapping.get('pages', {})
-        expected_files = {}
-
-        # 收集所有应该存在的文件
-        for html_filename in pages.keys():
-            expected_files[html_filename] = None
-
-        # 检查关键目录
-        for key_dir in ['data', 'resources', 'files', 'images']:
-            expected_files[key_dir] = None
+        # 新缓存记录每个已下载文件的内容哈希；旧缓存需重建一次以建立可信基线。
+        expected_files = cache_meta.get('files')
+        if not isinstance(expected_files, dict):
+            return (True, 'cache_manifest_missing', [])
 
         integrity = self._check_file_integrity(output_dir, expected_files)
 
-        if integrity['missing']:
-            return (True, 'files_missing', integrity['missing'])
+        invalid_files = integrity['missing'] + integrity['corrupted']
+        if invalid_files:
+            return (True, 'files_invalid', invalid_files)
 
         return (False, 'up_to_date', [])
 
@@ -3091,9 +3114,11 @@ class LanhuExtractor:
 
         # 创建输出目录
         output_path = Path(output_dir)
+        cache_existed = self._get_cache_meta_path(output_path).is_file()
+        update_reason = 'force_update' if force_update and cache_existed else 'first_download'
 
         # 检查是否需要更新
-        if not force_update and output_path.exists():
+        if not force_update and cache_existed:
             need_update, reason, missing_files = self._should_update_cache(
                 output_path, version_id, project_mapping
             )
@@ -3106,8 +3131,10 @@ class LanhuExtractor:
                     'output_dir': output_dir
                 }
 
+            update_reason = reason
+
             # 如果只是文件缺失，可以增量下载
-            if reason == 'files_missing' and missing_files:
+            if reason == 'files_invalid' and missing_files:
                 # 这里可以实现增量下载逻辑
                 # 为了简化，暂时还是全量下载
                 pass
@@ -3118,7 +3145,7 @@ class LanhuExtractor:
         pages = project_mapping.get('pages', {})
         is_first_page = True
 
-        downloaded_files = []
+        downloaded_files = {}
 
         for html_filename, page_info in pages.items():
             html_data = page_info.get('html', {})
@@ -3142,15 +3169,16 @@ class LanhuExtractor:
                 page_mapping = response.json()
 
                 # 下载所有依赖资源
-                await self._download_page_resources(
+                downloaded_files.update(await self._download_page_resources(
                     page_mapping, output_path, skip_document_js=(not is_first_page)
-                )
+                ))
                 is_first_page = False
 
             # 保存HTML
-            html_path = output_path / html_filename
-            html_path.write_text(html_content, encoding='utf-8')
-            downloaded_files.append(html_filename)
+            html_path = _safe_child_path(output_path, html_filename)
+            html_bytes = html_content.encode("utf-8")
+            _atomic_write(html_path, html_bytes)
+            downloaded_files[html_filename] = hashlib.sha256(html_bytes).hexdigest()
 
         # 保存缓存元数据
         cache_meta = {
@@ -3159,14 +3187,15 @@ class LanhuExtractor:
             'document_name': doc_info.get('name', 'Unknown'),
             'download_time': asyncio.get_event_loop().time(),
             'pages': list(pages.keys()),
-            'total_files': len(downloaded_files)
+            'total_files': len(downloaded_files),
+            'files': downloaded_files,
         }
         self._save_cache_meta(output_path, cache_meta)
 
         return {
-            'status': 'downloaded',
+            'status': 'updated' if cache_existed else 'downloaded',
             'version_id': version_id,
-            'reason': 'first_download' if not output_path.exists() else 'version_changed',
+            'reason': update_reason,
             'output_dir': output_dir
         }
 
@@ -3179,7 +3208,7 @@ class LanhuExtractor:
             sign_md5 = info.get('sign_md5', '')
             if sign_md5:
                 url = sign_md5 if sign_md5.startswith('http') else f"{CDN_URL}/{sign_md5}"
-                tasks.append(self._download_file(url, output_dir / local_path))
+                tasks.append((url, _safe_child_path(output_dir, local_path)))
 
         # 下载JS
         for local_path, info in page_mapping.get('scripts', {}).items():
@@ -3188,27 +3217,27 @@ class LanhuExtractor:
             sign_md5 = info.get('sign_md5', '')
             if sign_md5:
                 url = sign_md5 if sign_md5.startswith('http') else f"{CDN_URL}/{sign_md5}"
-                tasks.append(self._download_file(url, output_dir / local_path))
+                tasks.append((url, _safe_child_path(output_dir, local_path)))
 
         # 下载图片
         for local_path, info in page_mapping.get('images', {}).items():
             sign_md5 = info.get('sign_md5', '')
             if sign_md5:
                 url = sign_md5 if sign_md5.startswith('http') else f"{CDN_URL}/{sign_md5}"
-                tasks.append(self._download_file(url, output_dir / local_path))
+                tasks.append((url, _safe_child_path(output_dir, local_path)))
 
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not tasks:
+            return {}
+        results = await asyncio.gather(*(self._download_file(url, path, output_dir) for url, path in tasks))
+        return dict(results)
 
-    async def _download_file(self, url: str, local_path: Path):
+    async def _download_file(self, url: str, local_path: Path, output_dir: Path):
         """下载单个文件"""
-        try:
-            local_path.parent.mkdir(parents=True, exist_ok=True)
-            response = await self.client.get(url)
-            response.raise_for_status()
-            local_path.write_bytes(response.content)
-        except Exception:
-            pass
+        response = await self.client.get(url)
+        response.raise_for_status()
+        await asyncio.to_thread(_atomic_write, local_path, response.content)
+        relative_path = local_path.relative_to(output_dir.resolve()).as_posix()
+        return relative_path, hashlib.sha256(response.content).hexdigest()
 
     @staticmethod
     def _build_scale_urls(image_url: str, logical_w: float, logical_h: float, slice_scale: int) -> dict:
