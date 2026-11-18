@@ -45,6 +45,8 @@ def test_format_axure_annotations_includes_native_note_position_and_content():
     assert "目标位置: x=80 y=190 w=180 h=36" in text
     assert "打包生成包裹码后回显" in text
     assert "[2] 缺失映射 reason=missing_script_id ownerId=owner-2" in text
+    assert "没有 scriptId" not in text
+    assert "未定位标注未写入需求正文" in text
 
 
 def test_format_axure_annotations_returns_empty_text_without_annotations():

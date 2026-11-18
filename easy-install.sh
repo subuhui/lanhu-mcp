@@ -13,8 +13,19 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m' # No Color
 
-# 清屏
-clear
+# 始终以脚本所在仓库为工作目录，避免从其他目录调用时写错位置。
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# 国内镜像优先；用户显式指定的下载源保持权威。
+CUSTOM_PIP_INDEX_URL="${PIP_INDEX_URL:-}"
+CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST="${PLAYWRIGHT_DOWNLOAD_HOST:-}"
+CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="${PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST:-}"
+PLAYWRIGHT_MIRROR="https://cdn.npmmirror.com/binaries/playwright"
+PLAYWRIGHT_CHROMIUM_MIRROR="https://cdn.npmmirror.com/binaries/chrome-for-testing"
+
+# 清屏失败不应中断无交互安装。
+clear 2>/dev/null || true
 
 echo -e "${BOLD}${BLUE}"
 echo "╔═══════════════════════════════════════════════════╗"
@@ -42,27 +53,40 @@ echo -e "${BOLD}📦 步骤 1/5: 检查系统环境${NC}"
 echo -e "${BOLD}${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# 检查 Python
+# 检查 Python。macOS 仍可能自带 Python 3.9，因此必须校验实际版本。
 echo -e "正在检查 Python..."
-if ! command -v python3 &> /dev/null; then
-    echo -e "${RED}❌ 未检测到 Python 3${NC}"
+PYTHON_BIN=""
+for candidate in python3 python python3.13 python3.12 python3.11 python3.10; do
+    if command -v "$candidate" >/dev/null 2>&1 \
+        && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        PYTHON_BIN=$(command -v "$candidate")
+        break
+    fi
+done
+
+if [ -z "$PYTHON_BIN" ]; then
+    DETECTED_VERSION="未检测到"
+    if command -v python3 >/dev/null 2>&1; then
+        DETECTED_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
+    fi
+    echo -e "${RED}❌ 需要 Python 3.10 或更高版本，当前版本：${DETECTED_VERSION}${NC}"
     echo ""
-    echo "请先安装 Python 3.10 或更高版本："
-    echo "  Mac: brew install python3"
-    echo "  Ubuntu: sudo apt install python3 python3-pip"
+    echo "请先安装新版 Python，然后重新运行本脚本："
+    echo "  Mac: brew install python"
+    echo "  Ubuntu: sudo apt install python3 python3-venv python3-pip"
     echo "  官网: https://www.python.org/downloads/"
     exit 1
 fi
 
-PYTHON_VERSION=$(python3 -c 'import sys; print(".".join(map(str, sys.version_info[:2])))')
-echo -e "${GREEN}✅ Python $PYTHON_VERSION${NC}"
+PYTHON_VERSION=$($PYTHON_BIN -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
+echo -e "${GREEN}✅ Python $PYTHON_VERSION ($PYTHON_BIN)${NC}"
 
-# 检查 pip
-if ! command -v pip3 &> /dev/null; then
-    echo -e "${RED}❌ 未检测到 pip3${NC}"
+if ! "$PYTHON_BIN" -m pip --version >/dev/null 2>&1; then
+    echo -e "${RED}❌ 这个 Python 没有可用的 pip：$PYTHON_BIN${NC}"
+    echo "请安装 pip 后重新运行本脚本。"
     exit 1
 fi
-echo -e "${GREEN}✅ pip3 已安装${NC}"
+echo -e "${GREEN}✅ pip 已安装${NC}"
 
 # 检查 Git
 if ! command -v git &> /dev/null; then
@@ -88,32 +112,99 @@ echo ""
 # 创建虚拟环境
 if [ ! -d "venv" ]; then
     echo "正在创建 Python 虚拟环境..."
-    python3 -m venv venv
+    "$PYTHON_BIN" -m venv venv
     echo -e "${GREEN}✅ 虚拟环境创建完成${NC}"
 else
     echo -e "${GREEN}✅ 虚拟环境已存在${NC}"
 fi
 
-# 激活虚拟环境
-echo "正在激活虚拟环境..."
-source venv/bin/activate
+VENV_PYTHON="venv/bin/python"
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo -e "${RED}❌ venv 目录不是可用的 Python 虚拟环境${NC}"
+    echo "请删除 venv 目录后重新运行本脚本。"
+    exit 1
+fi
+if ! "$VENV_PYTHON" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)'; then
+    VENV_VERSION=$($VENV_PYTHON -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')
+    echo -e "${RED}❌ 现有 venv 使用 Python $VENV_VERSION，项目要求 Python 3.10+${NC}"
+    echo "请删除 venv 目录后重新运行本脚本。"
+    exit 1
+fi
 
-# 升级 pip
-echo "正在升级 pip..."
-pip install --upgrade pip -q
-
-# 安装依赖
-echo "正在安装项目依赖..."
+# 安装项目及依赖，确保 lanhu-mcp CLI 和 lanhu_design 包都可用。
+echo "正在安装项目及依赖..."
 echo -e "${YELLOW}（这可能需要 1-2 分钟，请耐心等待）${NC}"
-pip install -r requirements.txt -q
+install_project() {
+    local indexes=()
+    if [ -n "$CUSTOM_PIP_INDEX_URL" ]; then
+        indexes=("$CUSTOM_PIP_INDEX_URL")
+    else
+        indexes=(
+            "https://mirrors.aliyun.com/pypi/simple"
+            "https://pypi.tuna.tsinghua.edu.cn/simple"
+            "https://pypi.org/simple"
+        )
+    fi
+
+    local index
+    for index in "${indexes[@]}"; do
+        echo "正在使用 Python 包源：$index"
+        if PIP_INDEX_URL="$index" "$VENV_PYTHON" -m pip install --timeout 60 --retries 5 -e . -q; then
+            export PIP_INDEX_URL="$index"
+            return 0
+        fi
+        echo -e "${YELLOW:-}⚠️  当前包源不可用，尝试下一个...${NC:-}"
+    done
+    return 1
+}
+
+if ! install_project; then
+    echo -e "${RED:-}❌ 项目依赖下载失败${NC:-}"
+    echo "已尝试可用的国内镜像与备用源，请检查网络或代理后重试。"
+    echo "如需固定使用自定义 PyPI 镜像，可先设置 PIP_INDEX_URL。"
+    exit 1
+fi
+"$VENV_PYTHON" -m pip check
 
 echo -e "${GREEN}✅ 依赖安装完成${NC}"
 
+install_playwright_browser() {
+    if [ -n "$CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST" ] || [ -n "$CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST" ]; then
+        echo "正在使用用户指定的 Playwright 下载源"
+        local custom_env=()
+        [ -n "$CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST" ] && custom_env+=("PLAYWRIGHT_DOWNLOAD_HOST=$CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST")
+        [ -n "$CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST" ] && custom_env+=("PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=$CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST")
+        env "${custom_env[@]}" "$VENV_PYTHON" -m playwright install chromium
+        return
+    fi
+
+    echo "正在使用国内 Playwright 镜像（Chrome for Testing 专用路径）"
+    if PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_MIRROR" \
+        PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="$PLAYWRIGHT_CHROMIUM_MIRROR" \
+        "$VENV_PYTHON" -m playwright install chromium; then
+        return 0
+    fi
+
+    echo -e "${YELLOW:-}⚠️  新版国内镜像路径不可用，尝试兼容旧版 Playwright 镜像...${NC:-}"
+    if env -u PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST \
+        PLAYWRIGHT_DOWNLOAD_HOST="$PLAYWRIGHT_MIRROR" \
+        "$VENV_PYTHON" -m playwright install chromium; then
+        return 0
+    fi
+
+    echo -e "${YELLOW:-}⚠️  国内镜像均不可用，自动回退 Playwright 官方 CDN...${NC:-}"
+    env -u PLAYWRIGHT_DOWNLOAD_HOST -u PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST \
+        "$VENV_PYTHON" -m playwright install chromium
+}
 # 安装 Playwright 浏览器
 echo ""
 echo "正在安装 Playwright 浏览器..."
 echo -e "${YELLOW}（首次安装需要下载 Chromium，可能需要 1-2 分钟）${NC}"
-playwright install chromium
+if ! install_playwright_browser; then
+    echo "❌ Chromium 下载失败"
+    echo "请检查网络后重试；也可通过 PLAYWRIGHT_DOWNLOAD_HOST 指定其他镜像。"
+    exit 1
+fi
 
 echo ""
 echo -e "${GREEN}🎉 依赖安装完成！${NC}"
@@ -269,7 +360,7 @@ if [ "$start_now" = "y" ] || [ "$start_now" = "Y" ]; then
     echo ""
     
     # 运行服务器
-    python lanhu_mcp_server.py
+    ./venv/bin/lanhu-mcp --transport http
 else
     echo ""
     echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -277,8 +368,7 @@ else
     echo -e "${BOLD}${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
     echo "稍后运行服务器，请执行："
-    echo -e "  ${BOLD}source venv/bin/activate${NC}"
-    echo -e "  ${BOLD}python lanhu_mcp_server.py${NC}"
+    echo -e "  ${BOLD}./venv/bin/lanhu-mcp --transport http${NC}"
     echo ""
 fi
 

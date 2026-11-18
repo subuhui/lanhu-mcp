@@ -1,3 +1,5 @@
+> 当前分支仅注册 6 个设计类 MCP 工具，保留本地 Figma 坐标规则及缓存校验优化；下文中的需求分析、邀请链接和留言板工具未对外注册。
+
 <div align="center">
 
 # 🎨 Lanhu MCP Server | 蓝湖MCP服务器
@@ -29,7 +31,11 @@
 
 一个面向蓝湖设计交付与需求阅读的 [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) 服务器。由 MCP 提供来源数据和资源，大模型结合画面理解并适配目标工程。
 
-**v1.8.0：设计总览与区域定位、SVG/原图资源交付、富文本和字体依赖。** [版本说明](RELEASE_NOTES_v1.8.0.md) · [新工作流](DESIGN_CONTEXT.md) · [维护流程](MAINTAINING.md)
+**v1.9.0：HTTP 支持按请求隔离蓝湖 Cookie，多人可共用同一服务。** [版本说明](RELEASE_NOTES_v1.9.0.md) · [LOCAL-STDIO](LOCAL-STDIO.md) · [设计工作流](DESIGN_CONTEXT.md)
+
+**v1.8.7：本地 stdio 增加 `socksio` 与可选直连开关；新增免 Docker 本地启动指南。** [版本说明](RELEASE_NOTES_v1.8.7.md) · [LOCAL-STDIO](LOCAL-STDIO.md)
+
+**v1.8.6：需求页支持按文字、稳定块 ID、分块 ID 或坐标精确取局部图；长页分片保持横向完整。** [版本说明](RELEASE_NOTES_v1.8.6.md)
 
 
 🔥 **核心创新**：
@@ -84,6 +90,7 @@
   - 🧪 **测试视角**：测试场景、用例、边界值、校验规则
   - 🚀 **快速探索**：核心功能概览、模块依赖、评审要点
 - **四阶段工作流**：全局扫描 → 分组分析 → 反向验证 → 生成交付物
+- **长页视觉证据**：完整截图保持原画质与兼容性；超长或超大页面额外返回带重叠区域的原清晰度分块，并标注页名和源坐标。
 - **核对流程**：通过目录和来源信息帮助检查遗漏，不把流程提示当成准确率保证。
 
 ### 🎨 UI设计支持
@@ -157,22 +164,23 @@ AI 会自动完成：克隆项目 → 安装依赖 → 引导获取 Cookie → �
 git clone https://github.com/dsphper/lanhu-mcp.git
 cd lanhu-mcp
 
-# 2. 配置环境（会引导你输入 Cookie）
-bash setup-env.sh        # Linux/Mac
-# 或
-setup-env.bat           # Windows
+# 2. 创建配置并填写 Cookie
+cp .env.example .env
+# 编辑 .env，将 LANHU_COOKIE 改为你自己的 Cookie
 
-# 3. 启动服务
-docker-compose up -d
+# 3. 构建并启动服务
+docker compose up -d --build
 ```
 
-> 💡 `setup-env.sh` 会交互式引导你获取并配置蓝湖 Cookie，自动生成 `.env` 文件
+Windows 用户可用 `copy .env.example .env` 创建配置文件。旧版 Docker Compose 可将 `docker compose` 替换为 `docker-compose`。
+
+**已有单文件部署升级：** `lanhu_mcp_server.py` 已内嵌项目自带的 `lanhu_design` 实现。在依赖已安装的环境中，只替换这一个文件即可获得完整需求文档与设计稿工具；不再需要额外复制 `lanhu_design/` 目录。正式安装仍推荐使用完整仓库、wheel 或 Docker，以便同步依赖。
 
 📖 详细文档：[Docker 部署指南](DEPLOY.md)
 
 **2.2 源码运行**
 
-前置要求：Python 3.10+
+前置要求：Python 3.10+。macOS 自带的 Python 3.9 不满足要求，请先运行 `python3 --version` 确认版本。
 
 ```bash
 # 1. 克隆项目
@@ -185,17 +193,28 @@ bash easy-install.sh        # Linux/Mac
 easy-install.bat           # Windows
 ```
 
-> 💡 `easy-install.sh` 会自动安装依赖、引导获取 Cookie 并配置环境
+> 💡 `easy-install.sh` 会自动安装依赖、引导获取 Cookie 并配置环境。国内用户默认优先使用阿里云 PyPI，并自动回退到清华和官方 PyPI；Chromium 使用 npmmirror 的 Chrome for Testing 专用镜像，兼容旧版路径并以 Playwright 官方 CDN 兜底；可通过 `PIP_INDEX_URL`、`PLAYWRIGHT_DOWNLOAD_HOST`、`PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST` 覆盖。
 
 <details>
 <summary>或者手动安装（不推荐）</summary>
 
-```bash
-# 安装依赖
-pip install -r requirements.txt
-playwright install chromium
+Linux / macOS：
 
-# 手动配置（见下方"配置"部分）
+```bash
+python3 -m venv venv
+./venv/bin/python -m pip install -e .
+./venv/bin/python -m playwright install chromium
+cp .env.example .env
+# 编辑 .env，将 LANHU_COOKIE 改为你自己的 Cookie
+```
+
+Windows：
+
+```bat
+python -m venv venv
+venv\Scripts\python.exe -m pip install -e .
+venv\Scripts\python.exe -m playwright install chromium
+copy .env.example .env
 ```
 </details>
 
@@ -251,7 +270,8 @@ export DEBUG="false"               # 调试模式（true/false）
 
 **源码运行：**
 ```bash
-python lanhu_mcp_server.py
+./venv/bin/lanhu-mcp --transport http       # Linux/macOS
+venv\Scripts\lanhu-mcp.exe --transport http  # Windows
 ```
 
 **按需启动（stdio，本地 MCP 客户端推荐）：**
@@ -261,6 +281,8 @@ python lanhu_mcp_server.py
 ```
 
 `run-stdio.sh` 会自动进入项目目录、读取 `.env`，并以 stdio 方式启动 MCP 服务。适合 Cursor、Claude Code 等支持 `command` / `args` 配置的客户端按需拉起服务，无需手动常驻启动 HTTP 服务。
+
+📖 不依赖 Docker 的完整安装与注册步骤：[纯本地按需调用指南](LOCAL-STDIO.md)
 
 **Docker 运行：**
 ```bash
@@ -273,7 +295,85 @@ docker-compose down              # 停止
 
 ### 连接到 AI 客户端
 
-在支持 MCP 的 AI 客户端（如 Claude Code、Cursor、Windsurf）中配置：
+在支持 MCP 的 AI 客户端（如 Claude Code、Cursor、Windsurf）中配置。
+
+#### 多账号：每个用户用自己的蓝湖身份（推荐）
+
+HTTP 服务可以被多个用户共用，每个请求带上自己的 Cookie，彼此完全隔离：凭证互不串号、缓存目录按账号分开。Cookie 走**请求头**而不是 URL，不会出现在反向代理的 access log 里。
+
+前提：服务端启动时不配置 `LANHU_COOKIE`（或至少让每个客户端都带自己的头），否则未带头的请求会回落到服务端的共享账号。
+
+**Claude Code**（`~/.claude.json` 顶层 `mcpServers`，或 `claude mcp add` 加 `--header`）：
+
+```json
+{
+  "mcpServers": {
+    "lanhu": {
+      "type": "http",
+      "url": "http://192.168.1.10:8000/mcp",
+      "headers": {
+        "X-Lanhu-Cookie": "${LANHU_COOKIE}",
+        "X-Lanhu-Name": "${LANHU_USER_NAME}",
+        "X-Lanhu-Role": "${LANHU_USER_ROLE}"
+      }
+    }
+  }
+}
+```
+
+**Codex**（`~/.codex/config.toml`，`env_http_headers` 填的是**变量名**而非值）：
+
+```toml
+[mcp_servers.lanhu]
+url = "http://192.168.1.10:8000/mcp"
+env_http_headers = { "X-Lanhu-Cookie" = "LANHU_COOKIE", "X-Lanhu-Name" = "LANHU_USER_NAME" }
+```
+
+**Cursor**（项目或用户 `mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "lanhu": {
+      "url": "http://192.168.1.10:8000/mcp",
+      "headers": {
+        "X-Lanhu-Cookie": "<your_lanhu_cookie>",
+        "X-Lanhu-Name": "YourName",
+        "X-Lanhu-Role": "Developer"
+      }
+    }
+  }
+}
+```
+
+**opencode**（`~/.config/opencode/opencode.json`，插值语法是 `{env:VAR}`）：
+
+```json
+{
+  "mcp": {
+    "lanhu": {
+      "type": "remote",
+      "url": "http://192.168.1.10:8000/mcp",
+      "headers": { "X-Lanhu-Cookie": "{env:LANHU_COOKIE}", "X-Lanhu-Name": "{env:LANHU_USER_NAME}" },
+      "oauth": false
+    }
+  }
+}
+```
+
+每个用户在自己机器上设置 `LANHU_COOKIE` 为**自己的**蓝湖 Cookie，客户端启动时读入并作为请求头发给服务端。容器/服务端本身不需要保存任何人的 Cookie。
+
+| 请求头 | 说明 |
+|---|---|
+| `X-Lanhu-Cookie` | 本次调用者的蓝湖 Cookie（必需，除非服务端配了共享账号） |
+| `X-Lanhu-Dds-Cookie` | 设计稿域名（`dds.lanhuapp.com`）的独立 Cookie；不填则复用 `X-Lanhu-Cookie` |
+| `X-Lanhu-Name` / `X-Lanhu-Role` | 留言板署名与 @提醒，仅限 ASCII；中文请继续用 URL `?name=张三&role=后端`。不填则回落 URL，再回落环境变量 |
+
+隔离范围：需求文档与设计稿的下载缓存、元数据缓存、设计快照都按 Cookie 哈希分目录（`data/ns-<hash>/…`），不同账号既读不到彼此的缓存，也不会因为删缓存互相影响。
+
+#### 单账号：全团队共用一个蓝湖账号
+
+服务端配置 `LANHU_COOKIE` 后，不带 `X-Lanhu-Cookie` 的请求会使用这个共享账号（便于兼容旧部署）；带了头的请求仍按自己的身份走。
 
 **Claude Code 配置示例：**
 ```json
@@ -343,6 +443,7 @@ Windows
 > 📌 stdio 环境变量说明：
 > - `LANHU_USER_ROLE`: 用户角色（Developer/Frontend/Backend/Tester/Product 等）
 > - `LANHU_USER_NAME`: 用户姓名（用于协作追踪和 @提醒）
+> - `LANHU_DISABLE_SYSTEM_PROXY`: 设为 `1` 时，`run-stdio.sh` / `run-stdio.bat` 清除继承的代理并设置 `NO_PROXY=*`，避免 httpx 回落系统代理（适用于 IDE 注入 SOCKS 导致失败等场景）；详见 [LOCAL-STDIO.md](LOCAL-STDIO.md)
 
 ## 🎯 提升 UI 还原度
 
@@ -374,6 +475,8 @@ https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx&docId=xxx
 - 开发视角：详细需求文档 + 全局业务流程图
 - 测试视角：测试计划 + 测试用例清单 + 字段校验表
 - 快速探索：评审文档 + 模块依赖图 + 讨论要点
+
+`full` 模式遇到长页时会保留原完整截图，并默认附加前 4 张细节分块。若返回信息提示仍有后续分块，再使用 `tile_offset` 继续读取；`tile_limit` 每页最多为 12。普通页面和 `text_only` 模式不增加截图。
 
 ### UI 设计稿查看
 
@@ -420,7 +523,8 @@ AI 会自动：
 | `lanhu_resolve_invite_link` | 解析邀请链接 | 用户提供分享链接时 |
 | `lanhu_list_product_documents` | 获取项目产品文档清单 | 定位原型或需求文档 |
 | `lanhu_get_pages` | 获取原型页面列表 | 分析需求文档前必调用 |
-| `lanhu_get_ai_analyze_page_result` | 分析原型页面内容 | 提取需求细节 |
+| `lanhu_get_ai_analyze_page_result` | 分析原型页面内容，长页返回完整图与横向完整细节分块 | 提取需求细节 |
+| `lanhu_inspect_requirement_region` | 按文字、块 ID、分块 ID 或坐标返回局部视觉证据 | 判断“这两个字段”“如下”“红框处”等模糊指代 |
 | `lanhu_get_designs` | 获取UI设计图列表 | 查看设计稿前必调用 |
 | `lanhu_get_design_overview` | 固定版本，返回设计图与节点索引 | 按稳定ID读取设计 |
 | `lanhu_inspect_design_region` | 局部裁图、编号、样式与资源ID | 大模型结合视觉定位元素 |
@@ -825,7 +929,8 @@ ROLE_MAPPING_RULES = [
 
 ### 缓存控制
 
-缓存目录由环境变量 `DATA_DIR` 控制：
+缓存目录由环境变量 `DATA_DIR` 控制。相对路径固定相对于 `.env` 所在目录；未使用 `.env` 时固定相对于源码目录，不会随 Cursor、Claude Code 等客户端的启动目录变化。带 `versionId` 的需求文档在版本和文件完整性匹配时可直接离线命中缓存，不再先等待蓝湖接口。`text_only` 模式只提取文字和标注，不生成截图或扫描设计样式。长页细节分块使用独立缓存；v1.8.6 的缓存 schema 4 会重建一次分块元数据。分片始终保留内容区完整宽度，仅沿纵向切分，单片默认不高于 960 像素并保留重叠。`lanhu_inspect_requirement_region` 不运行 OCR：文字唯一命中时直接返回紧凑图和上下文图；重复文字返回候选预览与稳定块 ID；图片内文字可用 `tile_id` 或页面坐标继续定位。
+
 
 ```bash
 export DATA_DIR="/path/to/cache"
@@ -864,10 +969,38 @@ A: 重新登录蓝湖网页版，获取新的 Cookie 并更新环境变量或配
 <details>
 <summary><b>Q: 截图失败或显示空白？</b></summary>
 
-A: 确保系统已安装 Playwright 浏览器：
+A: 确保系统已安装与当前 Playwright 版本匹配的 Chromium：
 ```bash
-playwright install chromium
+# Linux / macOS：国内镜像
+PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright \
+PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/chrome-for-testing \
+./venv/bin/python -m playwright install chromium
+
+# Windows CMD：国内镜像
+set PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
+set PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/chrome-for-testing
+venv\Scripts\python.exe -m playwright install chromium
 ```
+Playwright 1.58+ 的 Chromium 使用 Chrome for Testing 路径，因此不能只设置旧的 `PLAYWRIGHT_DOWNLOAD_HOST`。一键安装脚本会自动配置双源，并兼容旧版 Playwright 和官方 CDN。
+</details>
+
+<details>
+<summary><b>Q: 不用 Docker，本地 Python 按需启动（stdio）有哪些注意事项？</b></summary>
+
+A:
+
+1. 使用 Python 3.10–3.13（推荐 3.12），过新的版本可能缺少依赖的预编译包。
+2. 运行 `bash easy-install.sh` 创建 `venv` 并安装依赖与 Chromium；MCP 客户端配置里的路径指向 `run-stdio.sh` / `run-stdio.bat` 的绝对路径，不要移动项目或删除 `venv`。
+3. Intel Mac 上 `pip install` 若因 `cryptography` 需要编译 Rust 而失败，请强制使用预编译包：
+
+```bash
+./venv/bin/python -m pip install --only-binary cryptography -e .
+```
+
+4. 修改 MCP 配置或 `.env` 后，需要重启会话或在客户端里重连 MCP 才会生效。
+5. 依赖含 `socksio`，httpx 可使用 SOCKS 代理；若 IDE 注入不可用 SOCKS 或需强制直连，可在 MCP `env` 中设置 `LANHU_DISABLE_SYSTEM_PROXY=1`（见 [LOCAL-STDIO.md](LOCAL-STDIO.md)）。
+
+完整步骤见 [LOCAL-STDIO.md](LOCAL-STDIO.md)。
 </details>
 
 <details>
@@ -905,7 +1038,7 @@ A: 删除 `data/` 目录下的对应缓存文件即可。系统会自动重新�
 
 ```bash
 # 安装开发依赖
-pip install -r requirements.txt
+python -m pip install -e '.[dev]'
 
 # 运行测试
 python -m pytest tests/
@@ -950,7 +1083,7 @@ black lanhu_mcp_server.py
 
 - 提交 Issue: [GitHub Issues](https://github.com/dsphper/lanhu-mcp/issues)
 - 邮件: dsphper@gmail.com
-<p align="center"><img src="images/wechat.jpg?v=20260415" alt="微信群二维码" width="400" /></p>
+<p align="center"><img src="images/wechat.jpg?v=20261103" alt="微信群二维码" width="400" /></p>
 
 ## 🗺️ 路线图
 

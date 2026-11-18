@@ -4,6 +4,14 @@ REM 蓝湖 MCP Server - 超级简单安装脚本 (Windows)
 REM 专为小白用户设计，交互式引导安装
 
 setlocal enabledelayedexpansion
+cd /d "%~dp0"
+
+REM 国内镜像优先；用户显式指定的下载源保持权威。
+set "CUSTOM_PIP_INDEX_URL=%PIP_INDEX_URL%"
+set "CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST=%PLAYWRIGHT_DOWNLOAD_HOST%"
+set "CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=%PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST%"
+set "PLAYWRIGHT_MIRROR=https://cdn.npmmirror.com/binaries/playwright"
+set "PLAYWRIGHT_CHROMIUM_MIRROR=https://cdn.npmmirror.com/binaries/chrome-for-testing"
 
 cls
 
@@ -20,7 +28,7 @@ echo 欢迎！这个脚本会帮你自动完成所有安装步骤
 echo 预计耗时：3-5 分钟
 echo.
 echo 按 Enter 开始安装，或按 Ctrl+C 取消
-pause >nul
+if not defined LANHU_INSTALL_NONINTERACTIVE pause >nul
 
 REM ============================================
 REM 步骤 1: 环境检查
@@ -32,31 +40,42 @@ echo 📦 步骤 1/5: 检查系统环境
 echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 
-REM 检查 Python
-echo 正在检查 Python...
+REM 检查 Python 版本
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo ❌ 未检测到 Python
-    echo.
-    echo 请先安装 Python 3.10 或更高版本：
-    echo   官网: https://www.python.org/downloads/
-    echo.
-    echo 安装时请务必勾选 "Add Python to PATH"
-    pause
+    echo [ERROR] 未检测到 Python
+    echo 请从 https://www.python.org/downloads/ 安装 Python 3.10 或更高版本
+    echo 安装时请勾选 "Add Python to PATH"
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
     exit /b 1
 )
 
-for /f "tokens=2" %%i in ('python --version') do set PYTHON_VERSION=%%i
-echo ✅ Python %PYTHON_VERSION%
+set "PYTHON_MAJOR="
+set "PYTHON_MINOR="
+for /f "tokens=1,2 delims=." %%A in ('python -c "import sys; print(str(sys.version_info.major) + '.' + str(sys.version_info.minor))" 2^>nul') do (
+    set "PYTHON_MAJOR=%%A"
+    set "PYTHON_MINOR=%%B"
+)
+set "PYTHON_OK=1"
+if not defined PYTHON_MAJOR set "PYTHON_OK="
+if defined PYTHON_MAJOR if !PYTHON_MAJOR! LSS 3 set "PYTHON_OK="
+if defined PYTHON_MAJOR if !PYTHON_MAJOR! EQU 3 if !PYTHON_MINOR! LSS 10 set "PYTHON_OK="
+if not defined PYTHON_OK (
+    for /f "tokens=2" %%V in ('python --version 2^>^&1') do set "PYTHON_VERSION=%%V"
+    echo [ERROR] 需要 Python 3.10 或更高版本，当前版本：!PYTHON_VERSION!
+    echo 请从 https://www.python.org/downloads/ 安装新版 Python 后重新运行
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
+    exit /b 1
+)
 
-REM 检查 pip
-pip --version >nul 2>&1
+for /f "tokens=2" %%V in ('python --version') do set "PYTHON_VERSION=%%V"
+echo [OK] Python !PYTHON_VERSION!
+python -m pip --version >nul 2>&1
 if errorlevel 1 (
-    echo ❌ 未检测到 pip
-    pause
+    echo [ERROR] 当前 Python 没有可用的 pip
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
     exit /b 1
 )
-echo ✅ pip 已安装
 
 echo.
 echo 🎉 环境检查通过！
@@ -80,27 +99,70 @@ if not exist "venv" (
 ) else (
     echo ✅ 虚拟环境已存在
 )
+if not exist "venv\Scripts\python.exe" (
+    echo [ERROR] venv 目录不是可用的 Python 虚拟环境
+    echo 请删除 venv 目录后重新运行本脚本
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
+    exit /b 1
+)
+set "VENV_PYTHON_MAJOR="
+set "VENV_PYTHON_MINOR="
+for /f "tokens=1,2 delims=." %%A in ('venv\Scripts\python.exe -c "import sys; print(str(sys.version_info.major) + '.' + str(sys.version_info.minor))" 2^>nul') do (
+    set "VENV_PYTHON_MAJOR=%%A"
+    set "VENV_PYTHON_MINOR=%%B"
+)
+set "VENV_PYTHON_OK=1"
+if not defined VENV_PYTHON_MAJOR set "VENV_PYTHON_OK="
+if defined VENV_PYTHON_MAJOR if !VENV_PYTHON_MAJOR! LSS 3 set "VENV_PYTHON_OK="
+if defined VENV_PYTHON_MAJOR if !VENV_PYTHON_MAJOR! EQU 3 if !VENV_PYTHON_MINOR! LSS 10 set "VENV_PYTHON_OK="
+if not defined VENV_PYTHON_OK (
+    echo [ERROR] 现有 venv 的 Python 版本低于 3.10
+    echo 请删除 venv 目录后重新运行本脚本
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
+    exit /b 1
+)
 
-REM 激活虚拟环境
-echo 正在激活虚拟环境...
-call venv\Scripts\activate.bat
-
-REM 升级 pip
-echo 正在升级 pip...
-python -m pip install --upgrade pip -q
-
-REM 安装依赖
-echo 正在安装项目依赖...
+REM 安装项目及依赖
+echo 正在安装项目及依赖...
 echo （这可能需要 1-2 分钟，请耐心等待）
-pip install -r requirements.txt -q
+set "INSTALL_OK="
+if defined CUSTOM_PIP_INDEX_URL (
+    call :install_project "!CUSTOM_PIP_INDEX_URL!"
+    if not errorlevel 1 set "INSTALL_OK=1"
+) else (
+    call :install_project "https://mirrors.aliyun.com/pypi/simple"
+    if not errorlevel 1 set "INSTALL_OK=1"
+    if not defined INSTALL_OK call :install_project "https://pypi.tuna.tsinghua.edu.cn/simple"
+    if not errorlevel 1 set "INSTALL_OK=1"
+    if not defined INSTALL_OK call :install_project "https://pypi.org/simple"
+    if not errorlevel 1 set "INSTALL_OK=1"
+)
+if not defined INSTALL_OK (
+    echo [ERROR] 项目依赖下载失败
+    echo 已尝试可用的国内镜像与备用源，请检查网络或代理后重试
+    echo 如需固定使用自定义 PyPI 镜像，可先设置 PIP_INDEX_URL
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
+    exit /b 1
+)
+venv\Scripts\python.exe -m pip check
 
 echo ✅ 依赖安装完成
 
 REM 安装 Playwright 浏览器
-echo.
-echo 正在安装 Playwright 浏览器...
-echo （首次安装需要下载 Chromium，可能需要 1-2 分钟）
-playwright install chromium
+if defined LANHU_SKIP_BROWSER_INSTALL (
+    echo [INFO] 已按 LANHU_SKIP_BROWSER_INSTALL 跳过 Chromium 下载
+) else (
+    echo.
+    echo 正在安装 Playwright 浏览器...
+    echo （首次安装需要下载 Chromium，可能需要 1-2 分钟）
+    call :install_browser
+    if errorlevel 1 (
+        echo [ERROR] Chromium 下载失败
+        echo 请检查网络后重试，也可通过 PLAYWRIGHT_DOWNLOAD_HOST 指定其他镜像
+        if not defined LANHU_INSTALL_NONINTERACTIVE pause
+        exit /b 1
+    )
+)
 
 echo.
 echo 🎉 依赖安装完成！
@@ -123,7 +185,7 @@ if not exist ".env" (
         echo ✅ 已创建 .env 配置文件
     ) else (
         echo ❌ 未找到 .env.example 文件
-        pause
+        if not defined LANHU_INSTALL_NONINTERACTIVE pause
         exit /b 1
     )
 ) else (
@@ -161,8 +223,12 @@ echo ━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 
 REM 尝试打开浏览器和文件
-set /p OPEN_FILES="我可以帮你打开蓝湖网站和 .env 文件吗？(y/n) [y]: "
-if "!OPEN_FILES!"=="" set OPEN_FILES=y
+if defined LANHU_INSTALL_NONINTERACTIVE (
+    set "OPEN_FILES=n"
+) else (
+    set /p OPEN_FILES="我可以帮你打开蓝湖网站和 .env 文件吗？(y/n) [y]: "
+    if "!OPEN_FILES!"=="" set OPEN_FILES=y
+)
 if /i "!OPEN_FILES!"=="y" (
     start https://lanhuapp.com
     start notepad .env
@@ -171,7 +237,7 @@ if /i "!OPEN_FILES!"=="y" (
 )
 
 echo 完成配置后，按 Enter 继续...
-pause >nul
+if not defined LANHU_INSTALL_NONINTERACTIVE pause >nul
 
 REM 读取 .env 文件中的 Cookie
 set LANHU_COOKIE=
@@ -186,13 +252,13 @@ REM 验证 Cookie 不为空
 if "!LANHU_COOKIE!"=="" (
     echo ❌ Cookie 未配置或配置不正确
     echo 请确保在 .env 文件中正确设置了 LANHU_COOKIE
-    pause
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
     exit /b 1
 )
 
 if "!LANHU_COOKIE!"=="your_lanhu_cookie_here" (
     echo ❌ Cookie 未修改，请在 .env 文件中设置正确的 Cookie
-    pause
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
     exit /b 1
 )
 
@@ -205,7 +271,7 @@ if errorlevel 1 (
         set /p CONTINUE_ANYWAY="确定要继续吗？(y/n) [n]: "
         if /i not "!CONTINUE_ANYWAY!"=="y" (
             echo 安装已取消
-            pause
+            if not defined LANHU_INSTALL_NONINTERACTIVE pause
             exit /b 1
         )
     )
@@ -242,8 +308,12 @@ echo 🚀 步骤 5/5: 启动服务
 echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 echo.
 
-set /p START_NOW="是否现在启动服务？(y/n) [y]: "
-if "!START_NOW!"=="" set START_NOW=y
+if defined LANHU_INSTALL_NONINTERACTIVE (
+    set "START_NOW=n"
+) else (
+    set /p START_NOW="是否现在启动服务？(y/n) [y]: "
+    if "!START_NOW!"=="" set START_NOW=y
+)
 
 if /i "!START_NOW!"=="y" (
     echo.
@@ -269,7 +339,7 @@ if /i "!START_NOW!"=="y" (
     echo.
     
     REM 运行服务器
-    python lanhu_mcp_server.py
+    venv\Scripts\lanhu-mcp.exe --transport http
 ) else (
     echo.
     echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -277,9 +347,46 @@ if /i "!START_NOW!"=="y" (
     echo ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     echo.
     echo 稍后运行服务器，请执行：
-    echo   venv\Scripts\activate.bat
-    echo   python lanhu_mcp_server.py
+    echo   venv\Scripts\lanhu-mcp.exe --transport http
     echo.
-    pause
+    if not defined LANHU_INSTALL_NONINTERACTIVE pause
 )
 
+exit /b 0
+
+:install_browser
+if defined CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST goto install_browser_custom
+if defined CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST goto install_browser_custom
+set "PLAYWRIGHT_DOWNLOAD_HOST=%PLAYWRIGHT_MIRROR%"
+set "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=%PLAYWRIGHT_CHROMIUM_MIRROR%"
+echo 正在使用国内 Playwright 镜像（Chrome for Testing 专用路径）
+venv\Scripts\python.exe -m playwright install chromium
+if not errorlevel 1 exit /b 0
+echo [WARN] 新版国内镜像路径不可用，尝试兼容旧版 Playwright 镜像...
+set "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="
+venv\Scripts\python.exe -m playwright install chromium
+if not errorlevel 1 exit /b 0
+echo [WARN] 国内镜像均不可用，自动回退 Playwright 官方 CDN...
+set "PLAYWRIGHT_DOWNLOAD_HOST="
+set "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST="
+venv\Scripts\python.exe -m playwright install chromium
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:install_browser_custom
+set "PLAYWRIGHT_DOWNLOAD_HOST=%CUSTOM_PLAYWRIGHT_DOWNLOAD_HOST%"
+set "PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST=%CUSTOM_PLAYWRIGHT_CHROMIUM_DOWNLOAD_HOST%"
+echo 正在使用用户指定的 Playwright 下载源
+venv\Scripts\python.exe -m playwright install chromium
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:install_project
+set "PIP_INDEX_URL=%~1"
+echo 正在使用 Python 包源：%PIP_INDEX_URL%
+venv\Scripts\python.exe -m pip install --timeout 60 --retries 5 -e . -q
+if errorlevel 1 (
+    echo [WARN] 当前包源不可用，尝试下一个...
+    exit /b 1
+)
+exit /b 0

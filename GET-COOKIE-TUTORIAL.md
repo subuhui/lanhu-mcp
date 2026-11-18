@@ -273,7 +273,7 @@ Hm_lvt_b4f3ed63ac4e8f18be586b41df007a16=1761908153; session=.eyJhbGciOiJIUzI1NiI
 
 2. **手动配置**
    - 将 Cookie 添加到 `.env` 文件
-   - 运行 `python lanhu_mcp_server.py`
+   - 运行 `./venv/bin/lanhu-mcp --transport http`（Windows 使用 `venv\Scripts\lanhu-mcp.exe --transport http`）
 
 3. **让 AI 帮你**
    - 把 Cookie 告诉 AI（在私密对话中）

@@ -18,7 +18,7 @@ jobs:
         python: ['3.10', '3.13']
     env:
       # CI uses synthetic fixtures and mocked responses, never account credentials.
-      LANHU_COOKIE: ci-placeholder-not-a-real-cookie
+      LANHU_COOKIE: session=ci-placeholder-not-a-real-cookie
       DDS_COOKIE: ci-placeholder-not-a-real-cookie
       FEISHU_WEBHOOK_URL: ''
     steps:
@@ -38,13 +38,113 @@ jobs:
       - name: Run offline regression suite
         run: python -m pytest
 
+  windows-install:
+    name: Windows source install and MCP smoke test
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      LANHU_COOKIE: session=ci-placeholder-not-a-real-cookie
+      DDS_COOKIE: ci-placeholder-not-a-real-cookie
+      FEISHU_WEBHOOK_URL: ''
+      LANHU_INSTALL_NONINTERACTIVE: '1'
+      PIP_INDEX_URL: https://pypi.org/simple
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Run the Windows installer from outside the checkout
+        shell: pwsh
+        run: |
+          Set-Content -Path .env -Value 'LANHU_COOKIE="session=ci-placeholder-not-a-real-cookie"' -Encoding utf8
+          $caller = Join-Path $env:RUNNER_TEMP 'lanhu-windows-caller'
+          New-Item -ItemType Directory -Force -Path $caller | Out-Null
+          $installerLog = Join-Path $env:RUNNER_TEMP 'windows-installer.log'
+          Push-Location $caller
+          & (Join-Path $env:GITHUB_WORKSPACE 'easy-install.bat') *> $installerLog
+          $installerExit = $LASTEXITCODE
+          Pop-Location
+          if ($installerExit -ne 0) {
+            $tail = (Get-Content -Path $installerLog -Tail 120) -join "`n"
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($tail))
+            Write-Output "::error title=Windows installer failed::base64:$encoded"
+            exit $installerExit
+          }
+          Get-Content -Path $installerLog
+          if (Test-Path (Join-Path $caller 'venv')) { throw 'Installer polluted caller directory with venv' }
+          if (Test-Path (Join-Path $caller '.env')) { throw 'Installer polluted caller directory with .env' }
+      - name: Check installed CLI and dependencies
+        shell: pwsh
+        run: |
+          .\venv\Scripts\python.exe -m pip check
+          .\venv\Scripts\lanhu-mcp.exe --version
+          .\venv\Scripts\lanhu-mcp.exe --help
+      - name: Install and launch Chromium on Windows
+        shell: pwsh
+        run: |
+          Remove-Item Env:PLAYWRIGHT_DOWNLOAD_HOST -ErrorAction SilentlyContinue
+          .\venv\Scripts\python.exe -m playwright install chromium
+          @'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as playwright:
+              browser = playwright.chromium.launch(headless=True)
+              page = browser.new_page(viewport={"width": 320, "height": 200})
+              page.set_content("<title>Windows audit</title><h1>ok</h1>")
+              assert page.title() == "Windows audit"
+              assert page.locator("h1").inner_text() == "ok"
+              browser.close()
+          print("Windows Chromium launch succeeded.")
+          '@ | Set-Content -Path $env:RUNNER_TEMP\windows_browser_smoke.py -Encoding utf8
+          .\venv\Scripts\python.exe $env:RUNNER_TEMP\windows_browser_smoke.py
+      - name: Complete an MCP stdio handshake on Windows
+        shell: pwsh
+        run: |
+          @'
+          import json
+          import subprocess
+          from pathlib import Path
+
+          executable = Path("venv/Scripts/lanhu-mcp.exe").resolve()
+          process = subprocess.Popen(
+              [str(executable), "--transport", "stdio"],
+              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+              text=True, encoding="utf-8",
+          )
+          initialize = {
+              "jsonrpc": "2.0", "id": 1, "method": "initialize",
+              "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                         "clientInfo": {"name": "windows-ci", "version": "1"}},
+          }
+          process.stdin.write(json.dumps(initialize) + "\n")
+          process.stdin.flush()
+          response = json.loads(process.stdout.readline())
+          assert response.get("id") == 1 and "result" in response, response
+          process.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}) + "\n")
+          process.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}) + "\n")
+          process.stdin.flush()
+          while True:
+              response = json.loads(process.stdout.readline())
+              if response.get("id") == 2:
+                  break
+          tools = response["result"]["tools"]
+          assert len(tools) == 6, tools
+          process.terminate()
+          process.wait(timeout=10)
+          print("Windows MCP stdio handshake exposed 6 design tools.")
+          '@ | Set-Content -Path $env:RUNNER_TEMP\windows_mcp_smoke.py -Encoding utf8
+          .\venv\Scripts\python.exe $env:RUNNER_TEMP\windows_mcp_smoke.py
+
   package:
     name: Build and smoke-test distributions
-    needs: tests
+    needs: [tests, windows-install]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      LANHU_COOKIE: ci-placeholder-not-a-real-cookie
+      LANHU_COOKIE: session=ci-placeholder-not-a-real-cookie
       DDS_COOKIE: ci-placeholder-not-a-real-cookie
       FEISHU_WEBHOOK_URL: ''
     steps:
@@ -111,7 +211,7 @@ jobs:
               )
               async with Client(transport, timeout=20) as client:
                   tools = {tool.name for tool in await client.list_tools()}
-                  assert len(tools) >= 16, tools
+                  assert len(tools) == 6, tools
                   assert {'lanhu_get_design_overview', 'lanhu_inspect_design_region',
                           'lanhu_export_design_assets'} <= tools
               print('Installed stdio CLI completed an MCP handshake and listed visual tools.')

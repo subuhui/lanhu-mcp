@@ -40,8 +40,9 @@ reference, and the slice-list tool itself still does not install assets.
   reference image, and optional DDS data belong to the selected design version.
 - DDS failure is reported in capabilities/gaps; it does not silently substitute
   a layout from another version.
-- Cached snapshots are separated by configured credentials. This remains a
-  **single configured-account service**, not per-caller project authorization.
+- Cached snapshots and design-service instances are separated by credentials. HTTP
+  callers can provide `X-Lanhu-Cookie` and optionally `X-Lanhu-Dds-Cookie`; requests
+  without these headers and stdio sessions use the configured account.
 
 ## Coordinates and visual queries
 

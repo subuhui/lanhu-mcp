@@ -10,6 +10,146 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Normalize Lanhu Figma artboard nodes to the canvas origin while preserving child coordinates and the source document position, allowing snapshots for nonzero artboard frames.
 
+## [1.9.0] - 2026-11-17
+
+### Added
+- HTTP 多租户：每个请求可通过 `X-Lanhu-Cookie` 携带自己的蓝湖身份，凭证、下载缓存和设计上下文按账号隔离，多个用户可共用同一 HTTP 服务（#139, closes #100）。
+
+See [v1.9.0 release notes](RELEASE_NOTES_v1.9.0.md).
+
+## [1.8.7] - 2026-10-13
+
+### Added
+- `LOCAL-STDIO.md`: Docker-free local Python stdio guide (clone, install, verify, register with common MCP clients).
+
+### Fixed
+- Add `socksio` dependency so httpx can use SOCKS proxies from the environment.
+- `run-stdio.sh` / `run-stdio.bat` support optional `LANHU_DISABLE_SYSTEM_PROXY=1` to clear inherited proxy variables and set `NO_PROXY=*` for direct connections during local stdio startup.
+
+See [v1.8.7 release notes](RELEASE_NOTES_v1.8.7.md).
+
+## [1.8.6] - 2026-09-24
+
+### Added
+
+- Added `lanhu_inspect_requirement_region`, which returns compact visual evidence around rendered text, a stable text-block ID, a long-page tile ID, or an explicit source-page rectangle.
+- Repeated text now returns bounded candidate previews instead of silently selecting the first occurrence. The caller can choose a stable `Bxxxx` block ID and request tight, context, or section crops.
+
+### Changed
+
+- Long Axure detail tiles now preserve the complete content width and split only along the vertical axis. Default strips are at most 960 source pixels high with 96 pixels of overlap, keeping form rows and table columns together.
+- Visible Axure text blocks include deterministic page-local IDs. No OCR or layer-name convention is required.
+
+### Fixed
+
+- Region and sparse-canvas captures use Chrome DevTools `captureBeyondViewport`, including pages whose useful content begins far from the canvas origin.
+- The final long-page tile is balanced instead of being merged into an oversized tail.
+
+### Compatibility
+
+- Existing full screenshots, `text_only`, and requirement analysis calls remain available. Screenshot cache schema 4 rebuilds long-page tile metadata once after upgrade.
+- The single-file server still embeds `lanhu_design`; replacing `lanhu_mcp_server.py` remains a supported upgrade for environments whose dependencies are already installed.
+
+### Verified
+
+- All 216 offline tests pass, and a fresh wheel install exposes all 17 tools through a real FastMCP stdio handshake.
+- A six-document, nine-page structural audit covered 632 text anchors and 448 visual elements; a 1600×1100 context crop intersected nearby visible evidence for all 632 anchors.
+- On the authorized 1920×4402 sample, `T002` is now a 1920×960 full-width strip and includes the ambiguous instruction plus both target fields in one image.
+- The exact instruction query returned two focused images totaling about 208 KiB, compared with about 1.3 MiB for the full screenshot plus four tiles in the benchmark sample.
+
+See [v1.8.6 release notes](RELEASE_NOTES_v1.8.6.md) for the workflow and validation details.
+
+## [1.8.5] - 2026-09-24
+
+### Added
+
+- Long Axure pages now keep the established full screenshot and add overlapping source-resolution detail tiles with stable tile IDs, page coordinates, and text-block mappings.
+- `lanhu_get_ai_analyze_page_result` accepts `tile_offset` and `tile_limit` so callers can page through large documents without returning every tile at once.
+
+### Fixed
+
+- Off-screen tiles use Chrome DevTools `captureBeyondViewport`, including a bounded scroll warm-up for lazy page content and bottom-edge clips that Playwright could reject after pixel rounding.
+- Detail-tile failures degrade to the existing full screenshot instead of failing the requirement page.
+- Image labels are interleaved with MCP image content, preventing page-to-image mapping errors when one page produces several images.
+- Local Axure navigation tolerates a delayed `DOMContentLoaded` event after the target document and body are already usable.
+
+### Compatibility
+
+- Normal pages, `text_only`, and the main `screenshot_path` keep their previous behavior. Screenshot cache schema 3 rebuilds metadata once after upgrade.
+
+### Verified
+
+- All 211 offline tests pass.
+- On an authorized live long page, the v1.8.4 and v1.8.5 main PNGs were both 1920×3683 and pixel-identical; v1.8.5 additionally returned four readable PNG tiles through FastMCP.
+- In that sample, local cold rendering changed from 2.495 seconds to 2.934 seconds (+0.439 seconds), while the cached public MCP call returned five PNG contents in 0.752 seconds.
+- A forced DevTools tile failure still returned a successful full-page PNG and explicit tile diagnostics.
+
+See [v1.8.5 release notes](RELEASE_NOTES_v1.8.5.md) for the compatibility contract and validation details.
+
+## [1.8.4] - 2026-09-24
+
+### Fixed
+
+- Requirement `text_only` analysis no longer scans design styles or captures full-page screenshots.
+- `lanhu_mcp_server.py` now embeds the project-owned `lanhu_design` package, restoring full single-file deployment without a sidecar source directory; missing optional third-party design dependencies no longer crash requirement tools.
+- Axure rendering uses bounded DOM/page readiness instead of waiting for `networkidle` plus a fixed two-second delay on every page.
+- Axure text extraction now returns only rendered text blocks with source-page bounds; hidden/unrendered annotations are excluded from requirement prose.
+- Very large sparse Axure canvases are cropped to visible content with the crop region reported to the caller.
+- Figma imports with absolute nonzero artboard origins normalize mixed absolute/local layer coordinates while retaining original bounds; unverified sources are read-only and cannot export.
+- Requirement analysis reuses the downloaded sitemap instead of requesting it twice.
+- Matching versioned requirement caches can return without contacting Lanhu; cache metadata now persists the page list needed for the offline fast path.
+- Relative `DATA_DIR` values resolve against the `.env` or source directory, so cache location no longer changes with the MCP client's working directory.
+- POSIX and Windows installers route Playwright 1.58+ Chromium downloads through npmmirror's Chrome for Testing mirror, with legacy and official fallbacks.
+
+### Verified
+
+- A live three-page v1.8.3 cold render took 10.118 seconds; the corrected v1.8.4 internal full render took 2.565 seconds.
+- Real MCP stdio warm calls completed in 0.135–0.136 seconds and returned the expected text and full-page PNG contents.
+- Regression coverage enforces no-network exact-version cache hits, one sitemap request per analysis, screenshot-free text-only mode, hidden Axure text filtering, sparse-canvas cropping, Figma nonzero-origin mapping, and full embedded single-file startup.
+- Windows release verification installs and launches Chromium before completing the MCP smoke test.
+
+See [v1.8.4 release notes](RELEASE_NOTES_v1.8.4.md) for the failure analysis and validation evidence.
+
+## [1.8.3] - 2026-09-20
+
+### Added
+
+- GitHub release verification now runs the Windows source installer on `windows-latest`.
+- The Windows gate installs dependencies, downloads and launches Chromium, checks the installed CLI, and completes an MCP stdio handshake.
+
+### Fixed
+
+- `easy-install.bat` supports an explicit noninteractive audit mode without changing the normal user prompts.
+- Windows Python version detection no longer uses `>` inside nested `cmd.exe` parsing, which previously misclassified Python 3.13 as unsupported.
+- Windows installer failures no longer wait for interactive `pause` input in automation.
+
+See [v1.8.3 release notes](RELEASE_NOTES_v1.8.3.md) for the Windows validation contract.
+
+## [1.8.2] - 2026-09-20
+
+### Fixed
+
+- Source installers now prefer Aliyun PyPI and automatically fall back to Tsinghua and official PyPI when the default mirror rejects or cannot serve a current pip client.
+- Explicit `PIP_INDEX_URL` overrides remain authoritative.
+- POSIX and Windows installers change to their own checkout directory before touching relative paths.
+- Added clean-install regression coverage for mirror ordering and checkout-relative execution.
+
+See [v1.8.2 release notes](RELEASE_NOTES_v1.8.2.md) for the public-tag installation audit.
+
+## [1.8.1] - 2026-09-20
+
+### Fixed
+- Source installers now reject Python versions below 3.10 before dependency resolution and install the project itself, including the `lanhu-mcp` console entry point.
+- Installer subprocesses no longer fail when terminal clearing is unavailable, and stdio launchers report a direct installation instruction when the virtual environment is missing.
+- Dependency downloads use longer timeouts and retries, without forcing an unrelated pip upgrade.
+
+### Changed
+- Installer scripts default to Tsinghua PyPI and the npmmirror Playwright browser mirror for the project's primarily Chinese user base; both remain overridable through environment variables.
+- Chinese and English setup instructions now create an isolated virtual environment and match the actual launcher paths.
+- Added regression coverage for installer syntax, Python 3.9 rejection, editable package installation, domestic mirror defaults, and missing stdio environments.
+
+See [v1.8.1 release notes](RELEASE_NOTES_v1.8.1.md) for the clean-install validation performed before release.
+
 ## [1.8.0] - 2026-09-10
 
 ### Added

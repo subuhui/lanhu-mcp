@@ -1,3 +1,5 @@
+> This branch registers only the six design MCP tools and retains its local Figma coordinate rules and cache verification improvements. Requirement analysis, invite-link, and message-board tools documented below are not registered.
+
 # 🎨 Lanhu MCP Server | 蓝湖MCP服务器
 
 **lanhumcp | lanhu-mcp | Lanhu AI Integration | MCP Server for Lanhu**
@@ -13,6 +15,12 @@
 [![Code of Conduct](https://img.shields.io/badge/Contributor%20Covenant-2.0-4baaaa.svg)](CODE_OF_CONDUCT.md)
 
 A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server for reading Lanhu design documents, Axure prototypes, UI designs and source assets, with a server-local team message board.
+
+**v1.9.0 isolates Lanhu cookies per HTTP request so one server can serve multiple accounts.** See [the release notes](RELEASE_NOTES_v1.9.0.md).
+
+**v1.8.7 adds `socksio` for local stdio SOCKS proxies, optional `LANHU_DISABLE_SYSTEM_PROXY`, and a Docker-free stdio guide.** See [the release notes](RELEASE_NOTES_v1.8.7.md) and [LOCAL-STDIO.md](LOCAL-STDIO.md).
+
+**v1.8.6 adds focused requirement-region inspection by text, stable block ID, tile ID, or coordinates, and keeps long-page tiles full-width.** See [the release notes](RELEASE_NOTES_v1.8.6.md).
 
 **MCP client integration:**
 
@@ -53,6 +61,7 @@ English | [简体中文](README.md)
   - 🧪 **Tester Perspective**: Test scenarios, test cases, boundary values, validation rules
   - 🚀 **Quick Explorer**: Core function overview, module dependencies, review points
 - **Four-Stage Workflow**: Global scan → Grouped analysis → Reverse validation → Generate deliverables
+- **Long-Page Visual Evidence**: Keep the original full screenshot for compatibility and add overlapping source-resolution detail tiles with page names and source coordinates
 - **Coverage Tracking**: A task-based analysis workflow helps identify omissions; completeness still needs review
 
 ### 🎨 UI Design Support
@@ -106,15 +115,28 @@ The model interprets component roles and chooses how to use assets. Python prese
 git clone https://github.com/dsphper/lanhu-mcp.git
 cd lanhu-mcp
 
-# Install the package and dependencies, including the CLI and bundle installer
-python -m pip install -e .
-python -m playwright install chromium
+# Create an isolated environment, then install the package and Chromium
+python3 -m venv venv
+./venv/bin/python -m pip install -e .
+./venv/bin/python -m playwright install chromium
+cp .env.example .env
 
-# Or use uv in your Python environment
-uv pip install -e .
+# Windows equivalents
+python -m venv venv
+venv\Scripts\python.exe -m pip install -e .
+venv\Scripts\python.exe -m playwright install chromium
+copy .env.example .env
 ```
 
-For an existing source checkout, upgrade dependencies with `python -m pip install -U -r requirements.txt` and reinstall the package with `python -m pip install -e .`. Restart the server and reconnect the MCP client so it discovers all 16 tools. Docker users should rebuild the image; restarting an old image does not load the new package or dependencies.
+Edit `.env` and replace `your_lanhu_cookie_here` with your Lanhu Cookie. macOS may still provide Python 3.9 as `/usr/bin/python3`; verify `python3 --version` before creating the environment. The bundled installer scripts prefer Aliyun PyPI with automatic Tsinghua/PyPI fallback and use npmmirror for Chromium; set `PIP_INDEX_URL` or `PLAYWRIGHT_DOWNLOAD_HOST` to override them.
+
+With `uv`, create the environment first: `uv venv venv --python 3.13`, then run `uv pip install --python venv/bin/python -e .`.
+
+For an existing source checkout, upgrade dependencies with `python -m pip install -U -r requirements.txt` and reinstall the package with `python -m pip install -e .`. Restart the server and reconnect the MCP client so it discovers all 17 tools. Docker users should rebuild the image; restarting an old image does not load the new package or dependencies.
+
+### Single-file deployment upgrades
+
+`lanhu_mcp_server.py` embeds the project's own `lanhu_design` implementation. In an environment where the declared third-party dependencies are installed, replacing this one file provides both requirement-document and design tools; copying a separate `lanhu_design/` directory is no longer required. A full repository, wheel, or Docker installation remains recommended for dependency upgrades.
 
 ### Configuration
 
@@ -169,13 +191,14 @@ export DEBUG="false"               # Debug mode (true/false)
 **Method 1: Direct Run**
 
 ```bash
-python lanhu_mcp_server.py
+# Linux/macOS
+./venv/bin/lanhu-mcp --transport http --host 127.0.0.1 --port 8000
 
-# Equivalent installed console command
-lanhu-mcp --transport http --host 127.0.0.1 --port 8000
+# Windows
+venv\Scripts\lanhu-mcp.exe --transport http --host 127.0.0.1 --port 8000
 
 # For a client that starts its own stdio server
-lanhu-mcp --transport stdio
+./run-stdio.sh
 ```
 
 Server will start at `http://localhost:8000/mcp`.
@@ -485,6 +508,8 @@ https://lanhuapp.com/web/#/item/project/product?tid=xxx&pid=xxx&docId=xxx
 - Tester Perspective: Test plan + Test case list + Field validation table
 - Quick Explorer: Review doc + Module dependency diagram + Discussion points
 
+In `full` mode, long pages retain the original full screenshot and include the first four detail tiles by default. If more tiles remain, call the tool again with the reported `tile_offset`; `tile_limit` is capped at 12 per page. Normal pages and `text_only` do not add screenshots.
+
 ### UI Design Viewing
 
 ```
@@ -540,7 +565,8 @@ Show all knowledge base messages about "testing"
 | `lanhu_resolve_invite_link` | Parse invite link | When user provides share link |
 | `lanhu_list_product_documents` | Discover product documents in a project | Find a PRD/prototype before choosing its pages |
 | `lanhu_get_pages` | Get prototype page list | Must call before analyzing requirements |
-| `lanhu_get_ai_analyze_page_result` | Analyze prototype page content | Extract requirement details |
+| `lanhu_get_ai_analyze_page_result` | Analyze prototype pages; return full images and full-width detail strips for long pages | Extract requirement details |
+| `lanhu_inspect_requirement_region` | Return focused visual evidence by text, block ID, tile ID, or source coordinates | Resolve references such as “these two fields”, “below”, or “inside the red box” |
 | `lanhu_get_designs` | Get UI design list | Must call before viewing designs |
 | `lanhu_get_ai_analyze_design_result` | Analyze UI designs | View design drafts |
 | `lanhu_get_design_slices` | Get legacy slice URLs and metadata | Inspect available resources without installing files |
@@ -554,7 +580,7 @@ Show all knowledge base messages about "testing"
 | `lanhu_say_delete` | Delete message | Remove messages |
 | `lanhu_get_members` | View collaborators | View team members |
 
-The 16 tools include a server-local `lanhu_say*` message board; those messages are not Lanhu's native design review comments.
+The 17 tools include a server-local `lanhu_say*` message board; those messages are not Lanhu's native design review comments.
 
 ## 📁 Project Structure
 
@@ -590,7 +616,8 @@ ROLE_MAPPING_RULES = [
 
 ### Cache Control
 
-Cache directory is controlled by environment variable `DATA_DIR`:
+The cache directory is controlled by `DATA_DIR`. A relative path is anchored to the `.env` directory, or to the source directory when no `.env` exists, so changing the MCP client's working directory does not create a second cache. For requirement URLs containing `versionId`, an intact matching cache returns without first contacting Lanhu. `text_only` extracts text and annotations without screenshots or design-style scans. Long-page detail tiles use cache schema 4 in v1.8.6 and rebuild their metadata once. Tiles preserve the full content width, split only on the vertical axis, default to at most 960 pixels high, and overlap adjacent strips. `lanhu_inspect_requirement_region` does not run OCR: a unique text match returns tight and context crops; duplicates return candidate previews with stable block IDs; text baked into images can be located by tile ID or source coordinates.
+
 
 ```bash
 export DATA_DIR="/path/to/cache"
@@ -630,7 +657,7 @@ A: Re-login to Lanhu web version, get new Cookie and update environment variable
 
 A: Ensure Playwright browsers are installed:
 ```bash
-playwright install chromium
+./venv/bin/python -m playwright install chromium
 ```
 </details>
 
@@ -669,7 +696,7 @@ Contributions are welcome! Please follow these steps:
 
 ```bash
 # Install development dependencies
-pip install -r requirements.txt
+python -m pip install -e '.[dev]'
 
 # Run tests
 python -m pytest tests/

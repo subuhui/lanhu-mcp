@@ -11,7 +11,7 @@
 
 ```
 [ ] 操作系统：Windows / Mac / Linux
-[ ] 是否安装了 Python？(python --version 或 python3 --version)
+[ ] 是否安装了 Python 3.10+？(python --version 或 python3 --version)
 [ ] 是否安装了 Git？(git --version)
 [ ] 是否有蓝湖账号？
 ```
@@ -239,11 +239,11 @@ AI 可以引导用户访问这些教程：
 
 **AI 可以：** 引导用户打开终端
 
-### Q2: 提示 Python 未安装？
+### Q2: 提示 Python 未安装或版本低于 3.10？
 
 AI 引导：
 ```
-看起来你的电脑还没有安装 Python，我帮你安装：
+项目需要 Python 3.10 或更高版本，请先安装新版 Python：
 
 Windows: 
   访问 https://www.python.org/downloads/

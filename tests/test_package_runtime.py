@@ -158,3 +158,83 @@ async def test_notification_diagnostics_use_stderr_only(notification_server, mon
     assert len(calls) == 1
     assert output.out == ""
     assert "飞书通知" in output.err
+
+
+def test_single_file_upgrade_keeps_requirement_server_importable(tmp_path):
+    """Historical deployments often replace only lanhu_mcp_server.py."""
+    import subprocess
+    import sys
+
+    script = tmp_path / "single_file_probe.py"
+    script.write_text(
+        """
+import builtins
+import runpy
+
+real_import = builtins.__import__
+def without_design(name, *args, **kwargs):
+    if name == 'lanhu_design' or name.startswith('lanhu_design.'):
+        error = ModuleNotFoundError("No module named 'lanhu_design'")
+        error.name = 'lanhu_design'
+        raise error
+    return real_import(name, *args, **kwargs)
+
+builtins.__import__ = without_design
+namespace = runpy.run_path(%r, run_name='lanhu_single_file')
+assert namespace['_design_service'] is None
+assert namespace['__version__'] == '1.9.0'
+print('single-file requirement server import ok')
+""" % str(Path(__file__).parents[1] / "lanhu_mcp_server.py"),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, str(script)], cwd=tmp_path, capture_output=True, text=True, timeout=30
+    )
+    assert result.returncode == 0, result.stderr
+    assert "single-file requirement server import ok" in result.stdout
+
+
+def test_embedded_design_package_makes_main_server_a_full_single_file(tmp_path):
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    source = Path(__file__).parents[1] / "lanhu_mcp_server.py"
+    standalone = tmp_path / "lanhu_mcp_server.py"
+    shutil.copy2(source, standalone)
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        """
+import os
+import runpy
+os.environ['LANHU_FORCE_EMBEDDED_DESIGN'] = '1'
+namespace = runpy.run_path(%r, run_name='lanhu_standalone')
+# Design services are created per caller credential, so there is no module-level
+# instance; creating one here proves the embedded package is importable and wired.
+assert namespace['DesignService'] is not None
+assert namespace['get_design_service']() is not None
+import lanhu_design
+assert '.zip/lanhu_design/' in lanhu_design.__file__.replace('\\\\', '/')
+print(namespace['__version__'])
+""" % str(standalone),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [sys.executable, str(probe)], cwd=tmp_path, capture_output=True, text=True,
+        timeout=30, env={**os.environ, "LANHU_FORCE_EMBEDDED_DESIGN": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().endswith("1.9.0")
+
+
+def test_embedded_design_payload_matches_modular_sources():
+    import subprocess
+    import sys
+
+    root = Path(__file__).parents[1]
+    result = subprocess.run(
+        [sys.executable, str(root / "scripts" / "embed_lanhu_design.py"), "--check"],
+        cwd=root, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
